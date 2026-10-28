@@ -102,6 +102,9 @@ function changed({ lines = true, style = false } = {}) {
 function recomputeCues() {
   const p = P();
   S.cues = buildCues(p.lines, p.timings, video.duration || p.video?.duration);
+  // 記録モード中のプレビュー用：記録位置より前の行だけで字幕を組み立てる。
+  // これから記録する行に古いタイミングが残っていても表示せず、「記録開始」を押しただけでは歌詞は出ない。
+  S.recordCues = S.recordMode ? buildCues(p.lines.slice(0, p.editor.cursor), p.timings, video.duration || p.video?.duration) : null;
   timeline.setCues(S.cues);
   updateRecordBar();
 }
@@ -197,6 +200,8 @@ function setRecordMode(on) {
   }
   S.recordMode = on;
   $('#app').classList.toggle('recording', on);
+  recomputeCues();
+  renderOverlay(true);
   updateRecordBar();
   if (on) {
     if (video.paused) video.play();
@@ -362,7 +367,7 @@ async function loadVideoFile(file, handle = null, { fromRestore = false } = {}) 
   if (p.editor.storeVideo) storeVideoBlob();
   fitStage();
   timeline.setDuration(video.duration);
-  $('#seek').max = Math.round(video.duration * 1000);
+  updateSeekBar();
   $('#timeDur').textContent = fmtTime(video.duration);
   const t = clamp(p.editor.currentTime || 0, 0, video.duration);
   video.currentTime = t;
@@ -427,10 +432,12 @@ async function restoreVideo() {
   }
   banner.innerHTML = `<span>🎞 動画「<b>${escapeHtml(p.video.name)}</b>」（${fmtBytes(p.video.size)}）を再度読み込んでください。</span>
     ${h ? '<button class="btn sm primary" data-act="grant">アクセスを許可して開く</button>' : ''}
-    <button class="btn sm" data-act="pick">ファイルを選択</button>`;
+    <button class="btn sm" data-act="pick">ファイルを選択</button>
+    <button class="banner-close" data-act="close" title="閉じる（右パネルの「動画情報」から再表示できます）" aria-label="閉じる">✕</button>`;
   banner.hidden = false;
   banner.onclick = async e => {
-    const act = e.target.dataset.act;
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (act === 'close') { banner.hidden = true; renderVideoInfo(); return; } // 閉じるだけ（編集データには触れない）
     if (act === 'pick') openVideoDialog();
     if (act === 'grant') {
       try {
@@ -487,14 +494,14 @@ function renderVideoInfo() {
     <div>${v.width}×${v.height}　${aspectLabel(v.width, v.height)}</div>
     <div>${fmtTime(v.duration)}　${fmtBytes(v.size)}</div>
     ${pr ? (pr.error ? `<div style="color:var(--warn)">解析: ${escapeHtml(pr.error)}</div>` : `<div>映像 ${escapeHtml(pr.vcodec || '-')}${pr.rotation ? `（回転 ${pr.rotation}°）` : ''} ${pr.fps ? pr.fps.toFixed(2) + 'fps' : ''}<br>音声 ${escapeHtml(pr.acodec || 'なし')}${pr.decodable === false ? '<br><span style="color:var(--warn)">※この映像コーデックは高速書き出し非対応（実時間で書き出します）</span>' : ''}</div>`) : ''}
-    ${S.file ? '' : '<div style="color:var(--warn)">動画ファイルが未読み込みです</div>'}
+    ${S.file ? '' : `<div style="color:var(--warn)">動画ファイルが未読み込みです${$('#reloadBanner').hidden && $('#reloadBanner').innerHTML ? ' <button class="btn sm" id="btnShowReload">再読み込みの案内を表示</button>' : ''}</div>`}
     <label class="inline" style="margin-top:6px;color:var(--fg)"><input type="checkbox" id="storeVideo" ${p.editor.storeVideo ? 'checked' : ''}> 動画をブラウザ内にも保存（再選択不要）</label>
     <div class="muted" style="font-size:11px">オフ: 動画の情報だけを保存し、次回は同じファイルを再選択（またはアクセス許可）して読み込みます。</div>
     <div><button class="btn sm" id="btnReselect">動画を選び直す</button></div>`;
   $('#storeVideo').onchange = async e => {
     p.editor.storeVideo = e.target.checked;
     if (p.editor.storeVideo) {
-      if (S.file && S.file.size > 2 * 1024 ** 3 && !confirm(`動画が大きいです（${fmtBytes(S.file.size)}）。ブラウザ内に保存しますか？`)) { p.editor.storeVideo = false; e.target.checked = false; return; }
+      if (S.file && S.file.size > 2 * 1024 ** 3 && !(await confirmDialog(`動画が大きいです（${fmtBytes(S.file.size)}）。ブラウザ内に保存しますか？`, { ok: '保存する' }))) { p.editor.storeVideo = false; e.target.checked = false; return; }
       storeVideoBlob();
     } else {
       await db.delete('videos', p.id).catch(() => {});
@@ -503,6 +510,7 @@ function renderVideoInfo() {
     S.dirty = true; autosave();
   };
   $('#btnReselect').onclick = openVideoDialog;
+  $('#btnShowReload') && ($('#btnShowReload').onclick = () => { $('#reloadBanner').hidden = false; renderVideoInfo(); });
 }
 
 // ============================================================
@@ -531,9 +539,9 @@ function fontFamilyFor(style) {
 function renderOverlay(force = false) {
   const ov = $('#overlay');
   const p = P();
-  if (!S.stageW) return;
+  if (!p || !S.stageW) return; // 起動直後（プロジェクト読み込み前）は何もしない
   const t = video.currentTime || 0;
-  const cue = activeCueAt(S.cues, t);
+  const cue = activeCueAt(S.recordCues || S.cues, t);
   const style = p.style;
   const key = cue ? `${cue.lineId}|${cue.text}|${S.stageW}x${S.stageH}` : null;
   if (key !== S.overlayKey) {
@@ -576,7 +584,7 @@ function loop() {
   if (S.file) {
     $('#timeCur').textContent = fmtTime(t);
     $('#tlTime').textContent = fmtTime(t);
-    if (!seekDragging) $('#seek').value = Math.round(t * 1000);
+    if (!seekDragging) updateSeekBar(t);
     timeline.setTime(t, !video.paused);
     renderOverlay();
   }
@@ -999,7 +1007,7 @@ async function applyPendingLyricSet() {
   if (set) useLyricSet(set);
 }
 
-function useLyricSet(set) {
+async function useLyricSet(set) {
   const p = P();
   const hasTimings = p.lines.some(l => p.timings[l.id]?.start != null);
   if (p.lyricSetId === set.id && hasTimings) {
@@ -1007,7 +1015,7 @@ function useLyricSet(set) {
     pushUndo('歌詞をライブラリと同期');
     p.lines = set.lines.map(l => ({ ...l }));
   } else {
-    if (hasTimings && !confirm(`現在の歌詞とタイミングを「${set.title}」に置き換えますか？\n（Ctrl/⌘+Z で元に戻せます）`)) return;
+    if (hasTimings && !(await confirmDialog(`現在の歌詞とタイミングを「${set.title}」に置き換えますか？\n（↶ 取り消しで元に戻せます）`, { ok: '置き換える' }))) return;
     pushUndo('歌詞の読み込み');
     p.lines = set.lines.map(l => ({ ...l }));
     p.timings = {};
@@ -1368,10 +1376,10 @@ async function fontCssFor(style) {
 // ============================================================
 // 書き出し
 // ============================================================
-function openExportDialog() {
+async function openExportDialog() {
   const p = P();
   if (!S.file) { toast('先に動画を読み込んでください', true); return; }
-  if (!S.cues.length && !confirm('記録済みの字幕がありません。このまま書き出しますか？')) return;
+  if (!S.cues.length && !(await confirmDialog('記録済みの字幕がありません。このまま書き出しますか？', { ok: '書き出す' }))) return;
   const base = (p.name || 'lyrics').replace(/[\\/:*?"<>|]/g, '_');
   const canPick = !!window.showSaveFilePicker;
   const big = S.file.size > 700 * 1024 * 1024;
@@ -1588,7 +1596,8 @@ async function openProjectsDialog() {
     }
     if (a === 'del') {
       if (id === P().id) { toast('開いているプロジェクトは削除できません', true); return; }
-      if (!confirm('このプロジェクトを削除しますか？（歌詞ライブラリは残ります）')) return;
+      const yes = await confirmDialog('このプロジェクトを削除しますか？（歌詞ライブラリは残ります）', { ok: '削除する', danger: true });
+      if (!yes) { openProjectsDialog(); return; }
       await db.delete('projects', id); await db.delete('videos', id).catch(() => {}); await db.delete('handles', id).catch(() => {});
       openProjectsDialog();
     }
@@ -1629,6 +1638,37 @@ function openModal(html, { wide = false, lock = false } = {}) {
   m.hidden = false;
   m.dataset.lock = lock ? '1' : '';
 }
+/**
+ * アプリ内の確認ダイアログ。window.confirm は一部の環境（アプリ内ブラウザなど）で表示されずに
+ * 即 false になり、操作が何も起きなくなるため使わない。
+ */
+function confirmDialog(message, { ok = 'OK', danger = false } = {}) {
+  return new Promise(resolve => {
+    openModal(`<div class="modal-head">確認</div>
+      <div class="modal-body"><div style="white-space:pre-wrap;line-height:1.6">${escapeHtml(message)}</div></div>
+      <div class="modal-foot"><button class="btn" id="dlgCancel">キャンセル</button><button class="btn ${danger ? 'danger-fill' : 'primary'}" id="dlgOk">${escapeHtml(ok)}</button></div>`, { lock: true });
+    const done = v => { closeModal(); resolve(v); };
+    $('#dlgOk').onclick = () => done(true);
+    $('#dlgCancel').onclick = () => done(false);
+    setTimeout(() => $('#dlgOk')?.focus(), 30);
+  });
+}
+
+/** アプリ内の入力ダイアログ（window.prompt の代わり）。キャンセル時は null */
+function promptDialog(message, def = '', { ok = 'OK', inputmode = 'text' } = {}) {
+  return new Promise(resolve => {
+    openModal(`<div class="modal-head">${escapeHtml(message)}</div>
+      <div class="modal-body"><input id="dlgInput" inputmode="${inputmode}" value="${escapeHtml(def)}"></div>
+      <div class="modal-foot"><button class="btn" id="dlgCancel">キャンセル</button><button class="btn primary" id="dlgOk">${escapeHtml(ok)}</button></div>`, { lock: true });
+    const inp = $('#dlgInput');
+    const done = v => { closeModal(); resolve(v); };
+    $('#dlgOk').onclick = () => done(inp.value);
+    $('#dlgCancel').onclick = () => done(null);
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) done(inp.value); });
+    setTimeout(() => { inp.focus(); inp.select(); }, 30);
+  });
+}
+
 function closeModal() { $('#modal').hidden = true; $('#modalCard').innerHTML = ''; }
 $('#modal').addEventListener('click', e => {
   if (e.target.closest('[data-close]') && !S.exporting) closeModal();
@@ -1667,6 +1707,13 @@ function showHelp() {
 // 初期化
 // ============================================================
 let seekDragging = false;
+const SEEK_STEPS = 10000; // シークバーの分解能（0〜10000 = 動画の 0%〜100%）
+
+/** シークバーのつまみ位置 = 再生時間 ÷ 動画の長さ（長さ不明・0秒のときは左端） */
+function updateSeekBar(t = video.currentTime || 0) {
+  const d = video.duration;
+  $('#seek').value = d > 0 && isFinite(d) ? Math.round(clamp(t / d, 0, 1) * SEEK_STEPS) : 0;
+}
 const timeline = new Timeline({
   el: $('#timeline'), inner: $('#tlInner'), ruler: $('#tlRuler'), wave: $('#tlWave'), cuesEl: $('#tlCues'), playhead: $('#tlPlayhead'),
   onSeek: t => seekTo(t),
@@ -1731,25 +1778,38 @@ function bindUI() {
   $('#btnMute').onclick = () => { video.muted = !video.muted; $('#btnMute').textContent = video.muted ? '🔇' : '🔊'; };
   $('#rate').onchange = e => { video.playbackRate = Number(e.target.value); };
   const seek = $('#seek');
+  seek.max = SEEK_STEPS;
+  seek.step = 1;
+  // ドラッグ中だけ再生位置への追従を止める。指やマウスをバーの外で離した場合・iPhone でタッチが
+  // キャンセルされた場合（pointercancel）も必ず解除する（解除漏れでつまみが止まったままになっていた）
+  const endDrag = () => { if (seekDragging) { seekDragging = false; updateSeekBar(); } };
   seek.addEventListener('pointerdown', () => { seekDragging = true; });
-  seek.addEventListener('pointerup', () => { seekDragging = false; });
-  seek.addEventListener('input', () => seekTo(seek.value / 1000));
+  ['pointerup', 'pointercancel'].forEach(ev => window.addEventListener(ev, endDrag));
+  seek.addEventListener('change', endDrag);
+  seek.addEventListener('blur', endDrag);
+  seek.addEventListener('input', () => {
+    const d = video.duration;
+    if (d > 0 && isFinite(d)) seekTo(seek.value / SEEK_STEPS * d);
+  });
   $('#btnExport').onclick = openExportDialog;
   $('#btnExport2').onclick = openExportDialog;
   $('#btnHelp').onclick = showHelp;
   $('#btnEditLines').onclick = openLyricsEditor;
   $('#btnCursorTop').onclick = () => { const p = P(); p.editor.cursor = firstUnrecorded(p.lines, p.timings); changed(); scrollLineIntoView(p.lines[p.editor.cursor]?.id); };
-  $('#btnClearTimings').onclick = () => {
+  $('#btnClearTimings').onclick = async () => {
     const p = P();
-    if (!Object.keys(p.timings).length) return;
-    if (!confirm('すべてのタイミングを消去しますか？（Ctrl/⌘+Z で元に戻せます）')) return;
+    if (!Object.keys(p.timings).length) { toast('消去するタイミングはありません'); return; }
+    if (!(await confirmDialog('すべての歌詞のタイミング（表示開始・終了時刻）を消去しますか？\n歌詞の文字・デザイン・動画はそのまま残ります。\n（↶ 取り消しで元に戻せます）', { ok: '全消去する', danger: true }))) return;
     pushUndo('タイミング全消去');
     p.timings = {};
     p.editor.cursor = 0;
+    S.selectedId = null;
+    timeline.setSelected(null);
     changed();
+    toast('すべてのタイミングを消去しました（歌詞はすべて未記録になりました）');
   };
-  $('#btnShiftAll').onclick = () => {
-    const v = prompt('すべてのタイミングをずらす秒数（例: 0.2 で遅く、-0.2 で早く）', '0.1');
+  $('#btnShiftAll').onclick = async () => {
+    const v = await promptDialog('すべてのタイミングをずらす秒数（例: 0.2 で遅く、-0.2 で早く）', '0.1', { ok: 'ずらす', inputmode: 'decimal' });
     const d = Number(v);
     if (v == null || !isFinite(d) || d === 0) return;
     pushUndo('一括ずらし');
@@ -1801,8 +1861,13 @@ function bindUI() {
   // 動画クリックで再生/一時停止
   $('#stage').addEventListener('click', togglePlay);
   new ResizeObserver(fitStage).observe(wrap);
-  video.addEventListener('durationchange', () => { if (isFinite(video.duration)) { recomputeCues(); timeline.setDuration(video.duration); } });
+  video.addEventListener('durationchange', () => { if (isFinite(video.duration)) { recomputeCues(); timeline.setDuration(video.duration); updateSeekBar(); } });
   video.addEventListener('seeked', () => renderOverlay(true));
+  // 描画ループ（requestAnimationFrame）が止まる状況でも、シークバーと時刻表示が動画の再生位置に一致するようにする
+  ['timeupdate', 'seeked', 'loadedmetadata'].forEach(ev => video.addEventListener(ev, () => {
+    if (!seekDragging) updateSeekBar();
+    $('#timeCur').textContent = fmtTime(video.currentTime || 0);
+  }));
   window.addEventListener('beforeunload', e => { if (S.dirty) { saveProject(false); e.preventDefault(); } });
   setupLineList();
   setupLibrary();

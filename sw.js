@@ -1,6 +1,6 @@
 // オフラインでも起動できるようにするサービスワーカー
 // 方針：ネットにつながる時は常に最新を取得（ネットワーク優先）し、取得したものをキャッシュ。オフライン時はキャッシュを使う。
-const CACHE = 'lyrics-subtitle-editor-v2';
+const CACHE = 'lyrics-subtitle-editor-v3';
 const CORE = [
   './', 'index.html', 'library.html', 'css/app.css', 'manifest.webmanifest',
   'js/app.js', 'js/cues.js', 'js/db.js', 'js/demux.js', 'js/exporter.js', 'js/fonts.js', 'js/library-link.js', 'js/library-page.js', 'js/subtitle.js', 'js/timeline.js', 'js/util.js',

@@ -114,6 +114,21 @@ function openEditor(set) {
 
 function closeModal() { $('#modal').hidden = true; $('#modalCard').innerHTML = ''; }
 
+/** アプリ内の確認ダイアログ（window.confirm は環境によって表示されず即 false になるため使わない） */
+function confirmDialog(message, ok = 'OK') {
+  return new Promise(resolve => {
+    const card = $('#modalCard');
+    card.className = 'modal-card';
+    card.innerHTML = `<div class="modal-head">確認</div>
+      <div class="modal-body"><div style="white-space:pre-wrap;line-height:1.6">${escapeHtml(message)}</div></div>
+      <div class="modal-foot"><button class="btn" id="dlgCancel">キャンセル</button><button class="btn danger-fill" id="dlgOk">${escapeHtml(ok)}</button></div>`;
+    $('#modal').hidden = false;
+    const done = v => { closeModal(); resolve(v); };
+    $('#dlgOk').onclick = () => done(true);
+    $('#dlgCancel').onclick = () => done(false);
+  });
+}
+
 let toastTimer;
 function toast(msg, err = false) {
   const t = $('#toast');
@@ -128,10 +143,11 @@ $('#modal').addEventListener('click', e => { if (e.target.closest('[data-close]'
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#modal').hidden) closeModal(); });
 $('#libSearch').addEventListener('input', render);
 $('#btnNewLyrics').onclick = () => openEditor(null);
+$('#btnNewLyrics2').onclick = () => openEditor(null);
 // 別タブで開いた場合は「エディタ」ボタンで元のタブに戻る
-$('#btnBack').addEventListener('click', e => {
-  if (window.opener && !window.opener.closed) { e.preventDefault(); window.opener.focus(); }
-});
+const backToEditor = e => { if (window.opener && !window.opener.closed) { e.preventDefault(); window.opener.focus(); } };
+$('#btnBack').addEventListener('click', backToEditor);
+$('#btnBack2').addEventListener('click', backToEditor);
 $('#libraryList').addEventListener('click', async e => {
   const btn = e.target.closest('button[data-a]');
   const li = e.target.closest('.lib-item');
@@ -155,7 +171,7 @@ $('#libraryList').addEventListener('click', async e => {
     await renumber();
   }
   if (a === 'del') {
-    if (!confirm(`歌詞「${set.title}」を削除しますか？\n（この歌詞を使っているプロジェクトの歌詞・タイミングは残ります）`)) return;
+    if (!(await confirmDialog(`歌詞「${set.title}」を削除しますか？\n（この歌詞を使っているプロジェクトの歌詞・タイミングは残ります）`, '削除する'))) return;
     await db.delete('lyrics', set.id);
     channel?.postMessage({ type: 'libraryChanged' });
     await load();

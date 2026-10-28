@@ -137,6 +137,8 @@ body.page-library { overflow: auto; }
 .lib-page-head input { flex: 1; min-width: 0; }
 .lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; padding: 0; overflow: visible; }
 .lib-grid .lib-item { margin: 0; }
+.lib-bottombar { display: none; }
+.lib-bottombar a.btn { text-decoration: none; color: var(--fg); }
 
 /* 中央 */
 .center { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #0b0c10; }
@@ -150,7 +152,10 @@ body.page-library { overflow: auto; }
 .drop-hint { text-align: center; color: var(--muted); border: 2px dashed var(--line); border-radius: 14px; padding: 40px 50px; }
 .drop-hint .drop-icon { font-size: 40px; }
 .stage-wrap.dragover .drop-hint, .stage-wrap.dragover .stage { outline: 3px dashed var(--primary); }
-.reload-banner { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); background: #3b2f12; border: 1px solid #806221; color: #ffe2a3; padding: 10px 14px; border-radius: 9px; display: flex; gap: 10px; align-items: center; z-index: 5; max-width: 90%; flex-wrap: wrap; }
+.banner-close { position: absolute; top: 6px; right: 6px; width: 36px; height: 36px; border-radius: 50%; border: 1px solid #806221; background: rgba(0,0,0,.25); color: #ffe2a3; font-size: 16px; line-height: 1; cursor: pointer; }
+.banner-close:hover { background: rgba(0,0,0,.45); }
+.btn.danger-fill { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 700; }
+.reload-banner { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); background: #3b2f12; border: 1px solid #806221; color: #ffe2a3; padding: 10px 52px 10px 14px; border-radius: 9px; display: flex; gap: 10px; align-items: center; z-index: 5; max-width: 90%; flex-wrap: wrap; }
 .transport { display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--bg2); border-top: 1px solid var(--line); }
 .time { font-family: ui-monospace, Menlo, monospace; font-variant-numeric: tabular-nums; }
 .seek { flex: 1; min-width: 60px; }
@@ -319,6 +324,16 @@ body.page-library { overflow: auto; }
   #app.left-collapsed .left-title { writing-mode: horizontal-tb; flex: 1; }
   .lib-grid { grid-template-columns: 1fr; }
   .lib-topbar .brand { display: block; }
+  /* 歌詞ライブラリ：上部のボタンは隠し、画面下部の固定バーに置く */
+  .lib-topbar #btnBack, .lib-topbar #btnNewLyrics { display: none; }
+  .lib-topbar { justify-content: center; }
+  .lib-bottombar { display: flex; gap: 10px; position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); background: rgba(26, 28, 35, .96);
+    border-top: 1px solid var(--line); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+  .lib-bottombar .btn { flex: 1; min-height: 50px; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 700; border-radius: 12px; }
+  /* 固定バーの分だけ下に余白を取り、最後の歌詞がバーに隠れないようにする */
+  .lib-page { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
+  .page-library .toast { bottom: auto; top: calc(10px + env(safe-area-inset-top)); }
   .line { padding: 9px 8px; }
   .line-handle { display: none; }
   .adj { grid-template-columns: 1fr; gap: 3px; }
