@@ -1,9 +1,10 @@
 // 歌詞字幕エディタ — メインコントローラー
 import { db } from './db.js';
 import { uid, clamp, fmtTime, parseTime, fmtSrt, debounce, escapeHtml, fmtBytes, downloadBlob, deepClone, mergeLines, splitLyrics, hexToRgba } from './util.js';
-import { buildCues, activeCueAt, firstUnrecorded } from './cues.js';
+import { buildCues, activeCueAt, firstUnrecorded, removeCuesKeepingGaps } from './cues.js';
 import { DEFAULT_STYLE, STYLE_PRESETS, createCueElement, layoutBox, animState, wipeClip } from './subtitle.js';
 import { Timeline } from './timeline.js';
+import { LIB_CHANNEL, PENDING_KEY, openLibraryPage } from './library-link.js';
 import { MAC_FONT_GROUPS, fontCss, primaryFamily, isFontAvailable, savedLocalFamilies, loadAllLocalFamilies } from './fonts.js';
 import { exportVideo } from './exporter.js';
 import { readMovie, describeTracks } from './demux.js';
@@ -11,6 +12,7 @@ import { readMovie, describeTracks } from './demux.js';
 const $ = sel => document.querySelector(sel);
 const $$ = sel => [...document.querySelectorAll(sel)];
 const video = $('#video');
+const libChannel = 'BroadcastChannel' in window ? new BroadcastChannel(LIB_CHANNEL) : null;
 
 const S = {
   project: null,
@@ -90,6 +92,8 @@ function changed({ lines = true, style = false } = {}) {
   updateSaveState();
   recomputeCues();
   if (lines) renderLines();
+  if (P().lines.every(l => l.id !== S.selectedId)) S.selectedId = null;
+  updateCueActions();
   if (style) { S.overlayKey = null; }
   renderOverlay(true);
   autosave();
@@ -202,14 +206,16 @@ function setRecordMode(on) {
 const toggleRecordMode = () => setRecordMode(!S.recordMode);
 
 /** 表示中の字幕をこの時刻で消す（間奏などで字幕を消したいとき） */
-function endCurrentCue() {
-  const t = video.currentTime;
+function endCurrentCue(evTimeStamp) {
+  if (!S.file) { toast('先に動画を読み込んでください', true); return; }
+  const t = Math.max(0, currentMediaTime(evTimeStamp) - (P().editor.recordOffset || 0));
   const cue = activeCueAt(S.cues, t);
-  if (!cue) { toast('表示中の字幕はありません'); return; }
+  if (!cue) { toast('いまは歌詞が表示されていません'); return; }
   pushUndo(`${cue.index + 1}行目の表示終了`);
   P().timings[cue.lineId].end = +t.toFixed(3);
   changed();
-  toast(`${cue.index + 1}行目の表示終了を ${fmtTime(t)} に設定`);
+  flashStage();
+  toast(`${fmtTime(t)} で歌詞を消しました（次の歌詞の記録で再び表示）`);
 }
 
 function flashStage() {
@@ -267,14 +273,16 @@ window.addEventListener('keydown', e => {
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.code === 'KeyS') { e.preventDefault(); saveProject(true); return; }
   if (!$('#modal').hidden) { if (e.key === 'Escape' && !S.exporting) closeModal(); return; }
-  // 記録モード中は、フォーカスの位置に関係なく記録キーで記録する
-  if (S.recordMode && !mod && !e.altKey && matchesRecordKey(e)) {
+  // 記録モード中は、フォーカスの位置に関係なく記録キーで記録する（歌詞の文字・時刻を直している最中は除く）
+  const editingLine = !!e.target.closest?.('.text-edit, .line-edit');
+  if (S.recordMode && !editingLine && !mod && !e.altKey && matchesRecordKey(e)) {
     if (e.repeat) return;
     e.preventDefault();
     recordNow(e.timeStamp);
     return;
   }
   if (S.recordMode && e.key === 'Escape') { e.preventDefault(); setRecordMode(false); return; }
+  if (S.recordMode && !editingLine && kind !== 'text' && e.code === 'KeyE' && !mod && !e.altKey) { if (!e.repeat) { e.preventDefault(); endCurrentCue(e.timeStamp); } return; }
   if (kind === 'text') return; // 文字入力中は誤作動させない
   if (mod && e.code === 'KeyZ') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (mod && e.code === 'KeyY') { e.preventDefault(); redo(); return; }
@@ -288,7 +296,7 @@ window.addEventListener('keydown', e => {
   if (e.code === 'Space') { e.preventDefault(); togglePlay(); return; }
   if (e.key === 'ArrowLeft') { e.preventDefault(); seekBy(-P().editor.seekStep); return; }
   if (e.key === 'ArrowRight') { e.preventDefault(); seekBy(P().editor.seekStep); return; }
-  if (e.code === 'KeyE') { e.preventDefault(); endCurrentCue(); return; }
+  if (e.code === 'KeyE') { e.preventDefault(); endCurrentCue(e.timeStamp); return; }
   if (e.key === ',') { e.preventDefault(); video.pause(); seekBy(-1 / 30); return; }
   if (e.key === '.') { e.preventDefault(); video.pause(); seekBy(1 / 30); return; }
 }, true);
@@ -502,7 +510,7 @@ function renderVideoInfo() {
 // ============================================================
 function fitStage() {
   const wrap = $('#stageWrap');
-  const vw = video.videoWidth || P().video?.width || 16, vh = video.videoHeight || P().video?.height || 9;
+  const vw = video.videoWidth || P()?.video?.width || 16, vh = video.videoHeight || P()?.video?.height || 9;
   const aw = wrap.clientWidth - 20, ah = wrap.clientHeight - 20;
   if (aw <= 0 || ah <= 0) return;
   let w, h;
@@ -619,10 +627,11 @@ function renderLines() {
           <button class="btn" data-a="play" ${c ? '' : 'disabled'}>▶ ここから再生</button>
           <button class="btn" data-a="cursorHere">● ここから記録</button>
           <button class="btn" data-a="clearTiming" ${c ? '' : 'disabled'}>タイミング消去</button>
-          <button class="btn" data-a="up" title="上へ">↑</button><button class="btn" data-a="down" title="下へ">↓</button>
-          <button class="btn" data-a="editText">文字を編集</button>
-          <button class="btn" data-a="insertBelow">＋行</button>
-          <button class="btn danger" data-a="deleteLine">削除</button>
+        </div>
+        <div class="line-actions">
+          <button class="btn" data-a="mergeNext" ${i < p.lines.length - 1 ? '' : 'disabled'} title="次の行とつなげて1行にする">⤓ 次の行と結合</button>
+          <button class="btn" data-a="insertBelow">＋ 下に行を追加</button>
+          <button class="btn" data-a="up" title="上へ移動">↑</button><button class="btn" data-a="down" title="下へ移動">↓</button>
         </div></div>`;
     }
     return `<li class="${cls}" data-id="${l.id}">
@@ -646,6 +655,7 @@ function selectLine(id, { seek = true } = {}) {
   S.selectedId = id;
   timeline.setSelected(id);
   renderLines();
+  updateCueActions();
   const t = P().timings[id];
   if (seek && t?.start != null) seekTo(t.start);
   scrollLineIntoView(id);
@@ -709,11 +719,11 @@ function setupLineList() {
         toast(`${idx + 1}行目から記録します。${keyLabel(p.editor.recordKey)} で記録`);
       } else if (a === 'clearTiming') {
         pushUndo(`${idx + 1}行目のタイミング消去`);
-        delete p.timings[id];
+        removeCuesKeepingGaps(p.lines, p.timings, video.duration || p.video?.duration, [id]);
         changed();
       } else if (a === 'up') moveLine(idx, idx - 1);
       else if (a === 'down') moveLine(idx, idx + 1);
-      else if (a === 'editText') startInlineEdit(li, id);
+      else if (a === 'mergeNext') mergeWithNext(idx);
       else if (a === 'insertBelow') {
         pushUndo('行の追加');
         const nl = { id: uid('l_'), text: '（新しい行）' };
@@ -722,18 +732,10 @@ function setupLineList() {
         S.selectedId = nl.id;
         changed();
         startInlineEdit($(`#lineList .line[data-id="${nl.id}"]`), nl.id);
-      } else if (a === 'deleteLine') {
-        pushUndo(`${idx + 1}行目の削除`);
-        p.lines.splice(idx, 1);
-        delete p.timings[id];
-        if (p.editor.cursor > idx) p.editor.cursor--;
-        p.editor.cursor = Math.min(p.editor.cursor, p.lines.length);
-        S.selectedId = null;
-        changed();
       }
       return;
     }
-    if (e.target.closest('.line-edit') || e.target.tagName === 'INPUT') return;
+    if (e.target.closest('.line-edit, .text-edit') || e.target.tagName === 'INPUT') return;
     selectLine(id === S.selectedId ? id : id);
   });
   list.addEventListener('dblclick', e => {
@@ -792,26 +794,142 @@ function setupLineList() {
   });
 }
 
+/** 一覧上で行の文字を修正（ダブルクリック・行の追加時） */
 function startInlineEdit(li, id) {
   const p = P();
   const line = p.lines.find(l => l.id === id);
   const span = li?.querySelector('.line-text');
   if (!span || !line) return;
-  const inp = document.createElement('input');
-  inp.className = 'inline-edit';
+  const box = document.createElement('div');
+  box.className = 'text-edit';
+  box.innerHTML = `<input class="inline-edit" enterkeyhint="done">
+    <div class="text-edit-btns">
+      <button type="button" class="btn sm primary" data-te="ok">✓ 確定</button>
+      <button type="button" class="btn sm ghost" data-te="cancel">キャンセル</button>
+    </div>`;
+  const inp = box.querySelector('input');
   inp.value = line.text;
-  span.replaceWith(inp);
+  span.replaceWith(box);
   inp.focus();
-  inp.select();
+  inp.setSelectionRange(line.text.length, line.text.length);
   let done = false;
-  const finish = ok => {
+  const finish = act => {
     if (done) return;
     done = true;
     const v = inp.value.trim();
-    if (ok && v && v !== line.text) { pushUndo('歌詞の編集'); line.text = v; changed(); } else renderLines();
+    if (act === 'ok' && v && v !== line.text) { pushUndo('歌詞の修正'); line.text = v; changed(); } else renderLines();
   };
-  inp.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) finish(true); if (e.key === 'Escape') finish(false); });
-  inp.addEventListener('blur', () => finish(true));
+  // ボタンを押してもフォーカスが外れない（カーソル位置が保たれる）ようにする
+  box.querySelectorAll('button').forEach(b => {
+    b.addEventListener('pointerdown', e => e.preventDefault());
+    b.addEventListener('click', e => { e.stopPropagation(); finish(b.dataset.te); });
+  });
+  inp.addEventListener('click', e => e.stopPropagation());
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) finish('ok'); if (e.key === 'Escape') finish('cancel'); });
+  inp.addEventListener('blur', () => setTimeout(() => { if (!box.contains(document.activeElement)) finish('ok'); }, 0));
+}
+
+/**
+ * 選んだブロックを再生位置（赤い線）で2つに分ける。歌詞の文字はそのまま同じものが2つになる。
+ * 前半：元の開始〜再生位置、後半：再生位置〜元の終了
+ */
+function splitCueAtPlayhead() {
+  const p = P();
+  const idx = p.lines.findIndex(l => l.id === S.selectedId);
+  const line = p.lines[idx];
+  if (!line) { toast('先にタイムラインのブロックを選んでください', true); return; }
+  const cue = S.cues.find(c => c.lineId === line.id);
+  if (!cue) { toast('この歌詞はまだ記録されていないため分割できません', true); return; }
+  const t = video.currentTime;
+  if (!(t > cue.start + 0.05 && t < cue.end - 0.05)) {
+    toast('赤い線（再生位置）を分けたいブロックの中に合わせてから押してください', true);
+    return;
+  }
+  pushUndo(`${idx + 1}行目のブロック分割`);
+  const nl = { id: uid('l_'), text: line.text };
+  p.lines.splice(idx + 1, 0, nl);
+  const tm = p.timings[line.id];
+  p.timings[nl.id] = { start: +t.toFixed(3), end: tm.end ?? null };
+  tm.end = null; // 前半の終了は後半の開始（再生位置）に合わせて自動
+  if (p.editor.cursor > idx) p.editor.cursor++;
+  S.selectedId = nl.id;
+  timeline.setSelected(nl.id);
+  changed();
+  toast(`ブロックを ${fmtTime(t)} で2つに分割しました`);
+}
+
+// ---------------- タイムラインの「修正・分割・削除」 ----------------
+/** タイムライン上部の操作ボタンを、選択中の歌詞に合わせて更新 */
+function updateCueActions() {
+  const p = P();
+  const idx = p ? p.lines.findIndex(l => l.id === S.selectedId) : -1;
+  const line = p?.lines[idx];
+  $('#tlSel').classList.toggle('active', !!line);
+  $('#tlSelLabel').textContent = line ? `${idx + 1}. ${line.text}` : 'ブロックを選ぶと修正・分割・削除できます';
+  $('#tlSelLabel').title = line ? line.text : '';
+  ['#btnCueEdit', '#btnCueSplit', '#btnCueDelete'].forEach(b => { $(b).disabled = !line; });
+}
+
+/** 選んだ歌詞の文字を修正するダイアログ */
+function openCueTextDialog() {
+  const p = P();
+  const idx = p.lines.findIndex(l => l.id === S.selectedId);
+  const line = p.lines[idx];
+  if (!line) { toast('先にタイムラインのブロック（または歌詞の行）を選んでください', true); return; }
+  openModal(`
+    <div class="modal-head">${idx + 1}行目を修正<button class="btn ghost sm" data-close>✕</button></div>
+    <div class="modal-body">
+      <label class="block"><span>歌詞</span><input id="cueText" enterkeyhint="done" autocomplete="off"></label>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close>キャンセル</button>
+      <button class="btn primary" id="cueOk">保存</button>
+    </div>`);
+  const inp = $('#cueText');
+  inp.value = line.text;
+  setTimeout(() => { inp.focus(); inp.setSelectionRange(line.text.length, line.text.length); }, 50);
+  const commit = () => {
+    const v = inp.value.trim();
+    closeModal();
+    if (v && v !== line.text) { pushUndo('歌詞の修正'); line.text = v; changed(); }
+  };
+  $('#cueOk').onclick = commit;
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); commit(); } });
+}
+
+/** 選んだ歌詞（行とタイミング）を削除 */
+function deleteSelectedCue() {
+  const p = P();
+  const idx = p.lines.findIndex(l => l.id === S.selectedId);
+  if (idx < 0) { toast('先にタイムラインのブロック（または歌詞の行）を選んでください', true); return; }
+  const id = p.lines[idx].id;
+  pushUndo(`${idx + 1}行目の削除`);
+  // 削除した区間は空白のまま残す（前のブロックの終了を延ばさない・後のブロックの開始も変えない）
+  removeCuesKeepingGaps(p.lines, p.timings, video.duration || p.video?.duration, [id]);
+  p.lines.splice(idx, 1);
+  if (p.editor.cursor > idx) p.editor.cursor--;
+  p.editor.cursor = Math.min(p.editor.cursor, p.lines.length);
+  S.selectedId = null;
+  timeline.setSelected(null);
+  changed();
+  toast(`${idx + 1}行目を削除しました（↶ 取り消しで元に戻せます）`);
+}
+
+/** 次の行とつなげて1行にする。タイミングは前の行のものを使う */
+function mergeWithNext(idx) {
+  const p = P();
+  const a = p.lines[idx], b = p.lines[idx + 1];
+  if (!a || !b) return;
+  pushUndo(`${idx + 1}行目と${idx + 2}行目の結合`);
+  const sep = /[A-Za-z0-9]$/.test(a.text) && /^[A-Za-z0-9]/.test(b.text) ? ' ' : '';
+  a.text = a.text + sep + b.text;
+  if (p.timings[b.id]?.end != null && p.timings[a.id]) p.timings[a.id].end = p.timings[b.id].end;
+  delete p.timings[b.id];
+  p.lines.splice(idx + 1, 1);
+  if (p.editor.cursor > idx + 1) p.editor.cursor--;
+  p.editor.cursor = Math.min(p.editor.cursor, p.lines.length);
+  S.selectedId = a.id;
+  changed();
 }
 
 // ============================================================
@@ -821,74 +939,43 @@ async function loadLibrary() {
   S.library = (await db.getAll('lyrics')).sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || b.updatedAt - a.updatedAt);
 }
 
-function renderLibrary() {
-  const q = $('#libSearch').value.trim().toLowerCase();
-  const items = S.library.filter(s => !q || s.title.toLowerCase().includes(q) || (s.artist || '').toLowerCase().includes(q) || s.lines.some(l => l.text.toLowerCase().includes(q)));
-  $('#libraryList').innerHTML = items.length ? items.map(s => `
-    <li class="lib-item ${s.id === P().lyricSetId ? 'in-use' : ''}" data-id="${s.id}">
-      <div class="lib-item-title">${escapeHtml(s.title || '（無題）')}</div>
-      <div class="lib-item-sub">${s.artist ? escapeHtml(s.artist) + '・' : ''}${s.lines.length}行・更新 ${new Date(s.updatedAt).toLocaleDateString('ja-JP')}${s.id === P().lyricSetId ? '・<b style="color:var(--primary)">使用中</b>' : ''}</div>
-      <div class="lib-item-preview">${escapeHtml(s.lines.slice(0, 2).map(l => l.text).join(' / '))}</div>
-      <div class="lib-item-btns">
-        <button class="btn primary" data-a="use">このプロジェクトで使う</button>
-        <button class="btn" data-a="edit">編集</button>
-        <button class="btn" data-a="dup">複製</button>
-        <button class="btn" data-a="up" title="上へ">↑</button><button class="btn" data-a="down" title="下へ">↓</button>
-        <button class="btn danger" data-a="del">削除</button>
-      </div>
-    </li>`).join('') : `<li class="empty-hint">${q ? '一致する歌詞はありません' : '保存された歌詞はありません。<br>「＋ 新しい歌詞」から作成してください。'}</li>`;
-}
-
 async function saveLyricSet(set) {
   set.updatedAt = Date.now();
   await db.put('lyrics', deepClone(set));
   await loadLibrary();
-  renderLibrary();
+  libChannel?.postMessage({ type: 'libraryChanged' });
 }
 
 function setupLibrary() {
-  $('#libSearch').addEventListener('input', renderLibrary);
-  $('#btnNewLyrics').onclick = () => openLyricsEditor(null);
-  $('#btnEmptyNew').onclick = () => openLyricsEditor(null);
-  $('#btnPickLyrics').onclick = () => switchTab('library');
-  $('#libraryList').addEventListener('click', async e => {
-    const btn = e.target.closest('button[data-a]');
-    const li = e.target.closest('.lib-item');
-    if (!btn || !li) return;
-    const set = S.library.find(s => s.id === li.dataset.id);
-    const idx = S.library.indexOf(set);
-    const a = btn.dataset.a;
-    if (a === 'use') useLyricSet(set);
-    if (a === 'edit') openLyricsEditor(set);
-    if (a === 'dup') {
-      const copy = { ...deepClone(set), id: uid('s_'), title: `${set.title}（コピー）`, createdAt: Date.now(), order: (set.order ?? 0) + 0.5 };
-      copy.lines = copy.lines.map(l => ({ id: uid('l_'), text: l.text }));
-      await saveLyricSet(copy);
-      await renumberLibrary();
-      toast('歌詞を複製しました');
-    }
-    if (a === 'up' || a === 'down') {
-      const j = a === 'up' ? idx - 1 : idx + 1;
-      if (j < 0 || j >= S.library.length) return;
-      [S.library[idx], S.library[j]] = [S.library[j], S.library[idx]];
-      await renumberLibrary(true);
-    }
-    if (a === 'del') {
-      if (!confirm(`歌詞「${set.title}」を削除しますか？\n（この歌詞を使っているプロジェクトの歌詞・タイミングは残ります）`)) return;
-      await db.delete('lyrics', set.id);
+  $('#btnOpenLibrary').onclick = goLibrary;
+  $('#btnEmptyLib').onclick = goLibrary;
+  $('#btnEmptyNew').onclick = openLyricsEditor;
+  // 別タブの歌詞ライブラリからの「この歌詞を使う」
+  libChannel?.addEventListener('message', async e => {
+    if (e.data?.type === 'libraryChanged') { await loadLibrary(); return; }
+    if (e.data?.type === 'useLyricSet') {
+      libChannel.postMessage({ type: 'ack', id: e.data.id });
+      try { localStorage.removeItem(PENDING_KEY); } catch { /* 無視 */ }
       await loadLibrary();
-      renderLibrary();
-      toast('削除しました');
+      const set = S.library.find(x => x.id === e.data.id);
+      if (set) useLyricSet(set);
     }
   });
 }
 
-async function renumberLibrary(keepArrayOrder = false) {
-  if (!keepArrayOrder) await loadLibrary();
-  for (let i = 0; i < S.library.length; i++) {
-    if (S.library[i].order !== i) { S.library[i].order = i; await db.put('lyrics', deepClone(S.library[i])); }
-  }
-  renderLibrary();
+async function goLibrary() {
+  if (S.dirty) await saveProject(false);
+  openLibraryPage();
+}
+
+/** エディタが閉じていた間にライブラリで「この歌詞を使う」が押されていたら読み込む */
+async function applyPendingLyricSet() {
+  let pending = null;
+  try { pending = JSON.parse(localStorage.getItem(PENDING_KEY) || 'null'); localStorage.removeItem(PENDING_KEY); } catch { /* 無視 */ }
+  if (!pending || Date.now() - pending.at > 30 * 60 * 1000) return;
+  await loadLibrary();
+  const set = S.library.find(x => x.id === pending.id);
+  if (set) useLyricSet(set);
 }
 
 function useLyricSet(set) {
@@ -911,8 +998,7 @@ function useLyricSet(set) {
   S.selectedId = null;
   if (!p.name || p.name === '新しいプロジェクト') { p.name = set.title; $('#projectName').value = p.name; }
   changed();
-  renderLibrary();
-  switchTab('timing');
+  saveProject(false).then(() => libChannel?.postMessage({ type: 'projectChanged' }));
   toast(`歌詞「${set.title}」を読み込みました（${set.lines.length}行）`);
 }
 
@@ -921,27 +1007,25 @@ function cleanupTimings() {
   for (const id of Object.keys(p.timings)) if (!ids.has(id)) delete p.timings[id];
 }
 
-/** 歌詞エディタ。set=null で新規。mode='project' はプロジェクト内の歌詞を編集 */
-function openLyricsEditor(set, mode = 'library') {
+/** このプロジェクトの歌詞をテキストでまとめて編集（ライブラリ未登録なら新規登録する） */
+function openLyricsEditor() {
   const p = P();
-  const isProject = mode === 'project';
-  const title = isProject ? (p.lyricTitle || '') : (set?.title || '');
-  const artist = isProject ? (S.library.find(s => s.id === p.lyricSetId)?.artist || '') : (set?.artist || '');
-  const lines = isProject ? p.lines : (set?.lines || []);
+  const title = p.lyricTitle || '';
+  const artist = S.library.find(s => s.id === p.lyricSetId)?.artist || '';
   openModal(`
-    <div class="modal-head">${isProject ? 'このプロジェクトの歌詞を編集' : set ? '歌詞を編集' : '新しい歌詞'}<button class="btn ghost sm" data-close>✕</button></div>
+    <div class="modal-head">${p.lines.length ? 'このプロジェクトの歌詞を編集' : '歌詞を入力'}<button class="btn ghost sm" data-close>✕</button></div>
     <div class="modal-body">
       <label class="block"><span>楽曲名</span><input id="edTitle" value="${escapeHtml(title)}" placeholder="例：朝焼けのカーテン"></label>
       <label class="block"><span>アーティスト（任意）</span><input id="edArtist" value="${escapeHtml(artist)}"></label>
       <label class="block"><span>歌詞（1行＝1字幕。空行は無視されます）</span>
-        <textarea id="edLines" placeholder="もう朝焼けがカーテンを染める&#10;君のいない部屋で目を覚ます&#10;昨日の続きを探している">${escapeHtml(lines.map(l => l.text).join('\n'))}</textarea></label>
+        <textarea id="edLines" placeholder="もう朝焼けがカーテンを染める&#10;君のいない部屋で目を覚ます&#10;昨日の続きを探している">${escapeHtml(p.lines.map(l => l.text).join('\n'))}</textarea></label>
       <div class="muted small" id="edCount"></div>
-      ${isProject && p.lyricSetId ? '<label class="inline"><input type="checkbox" id="edSyncLib" checked> ライブラリの歌詞にも反映する</label>' : ''}
-      ${isProject ? '<div class="muted small">本文が同じ行・同じ位置の行は、記録済みのタイミングを引き継ぎます。</div>' : ''}
+      ${p.lyricSetId ? '<label class="inline"><input type="checkbox" id="edSyncLib" checked> 歌詞ライブラリにも反映する</label>' : '<div class="muted small">保存すると歌詞ライブラリにも登録されます。</div>'}
+      <div class="muted small">本文が同じ行・同じ位置の行は、記録済みのタイミングを引き継ぎます。</div>
     </div>
     <div class="modal-foot">
       <button class="btn" data-close>キャンセル</button>
-      ${isProject ? '<button class="btn primary" id="edSave">保存</button>' : '<button class="btn" id="edSave">ライブラリに保存</button><button class="btn primary" id="edSaveUse">保存してこのプロジェクトで使う</button>'}
+      <button class="btn primary" id="edSave">保存</button>
     </div>`);
   const ta = $('#edLines');
   const count = () => { $('#edCount').textContent = `${splitLyrics(ta.value).length} 行`; };
@@ -949,56 +1033,38 @@ function openLyricsEditor(set, mode = 'library') {
   count();
   setTimeout(() => (title ? ta : $('#edTitle')).focus(), 50);
 
-  const doSave = async use => {
+  $('#edSave').onclick = async () => {
     const texts = splitLyrics(ta.value);
     const t = $('#edTitle').value.trim() || '無題の歌詞';
     const ar = $('#edArtist').value.trim();
     if (!texts.length) { toast('歌詞を1行以上入力してください', true); return; }
-    if (isProject) {
-      pushUndo('歌詞の編集');
-      const cursorId = p.lines[p.editor.cursor]?.id;
-      p.lines = mergeLines(p.lines, texts);
-      p.lyricTitle = t;
-      cleanupTimings();
-      const ci = cursorId ? p.lines.findIndex(l => l.id === cursorId) : -1;
-      p.editor.cursor = ci >= 0 ? ci : firstUnrecorded(p.lines, p.timings);
-      if ($('#edSyncLib')?.checked) {
-        const lib = S.library.find(s => s.id === p.lyricSetId);
-        if (lib) { lib.title = t; lib.artist = ar; lib.lines = p.lines.map(l => ({ ...l })); await saveLyricSet(lib); }
-      } else if (!p.lyricSetId) {
-        // 新規にライブラリへ登録
-        const ns = { id: uid('s_'), title: t, artist: ar, lines: p.lines.map(l => ({ ...l })), createdAt: Date.now(), order: S.library.length };
-        await saveLyricSet(ns);
-        p.lyricSetId = ns.id;
-      }
-      closeModal();
-      changed();
-      return;
+    pushUndo('歌詞の編集');
+    const cursorId = p.lines[p.editor.cursor]?.id;
+    p.lines = mergeLines(p.lines, texts);
+    p.lyricTitle = t;
+    cleanupTimings();
+    const ci = cursorId ? p.lines.findIndex(l => l.id === cursorId) : -1;
+    p.editor.cursor = ci >= 0 ? ci : firstUnrecorded(p.lines, p.timings);
+    if ($('#edSyncLib')?.checked) {
+      const lib = S.library.find(s => s.id === p.lyricSetId);
+      if (lib) { lib.title = t; lib.artist = ar; lib.lines = p.lines.map(l => ({ ...l })); await saveLyricSet(lib); }
+    } else if (!p.lyricSetId) {
+      const ns = { id: uid('s_'), title: t, artist: ar, lines: p.lines.map(l => ({ ...l })), createdAt: Date.now(), order: S.library.length };
+      await saveLyricSet(ns);
+      p.lyricSetId = ns.id;
     }
-    const s = set ? deepClone(set) : { id: uid('s_'), createdAt: Date.now(), order: -1, lines: [] };
-    s.title = t; s.artist = ar;
-    s.lines = mergeLines(s.lines, texts);
-    await saveLyricSet(s);
-    if (!set) await renumberLibrary();
+    if (!p.name || p.name === '新しいプロジェクト') { p.name = t; $('#projectName').value = t; }
     closeModal();
-    toast('歌詞を保存しました');
-    if (use) useLyricSet(S.library.find(x => x.id === s.id));
+    changed();
   };
-  $('#edSave').onclick = () => doSave(false);
-  $('#edSaveUse') && ($('#edSaveUse').onclick = () => doSave(true));
 }
 
-function switchTab(name) {
-  $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-  $$('.tab-body').forEach(b => { b.hidden = b.dataset.tab !== name; });
-  if (name === 'library') renderLibrary();
-}
 
 // ============================================================
 // 字幕デザイン（右パネル）
 // ============================================================
 const STYLE_FIELDS = [
-  { type: 'presets' },
+  { type: 'sizeStep' },
   { key: 'writingMode', label: '方向', type: 'seg', options: [['horizontal', '横書き'], ['vertical', '縦書き']] },
   { key: 'fontFamily', label: 'フォント', type: 'font' },
   { key: 'fontSize', label: 'サイズ', type: 'range', min: 16, max: 240, step: 1, unit: 'px' },
@@ -1034,11 +1100,31 @@ const STYLE_FIELDS = [
   { key: 'animation', label: '表示効果', type: 'select', options: [['none', 'なし'], ['fade', 'フェード'], ['slideUp', 'スライドアップ'], ['zoom', 'ズーム'], ['wipe', 'ワイプ（文字送り）']] },
   { key: 'animIn', label: '表示時間', type: 'range', min: 0, max: 1.5, step: 0.05, unit: 's' },
   { key: 'animOut', label: '消去時間', type: 'range', min: 0, max: 1.5, step: 0.05, unit: 's' },
+  { sub: 'プリセット' },
+  { type: 'presets' },
 ];
+
+// ↑↓ボタンで切り替える字幕サイズの段階（短辺 1080px 換算）
+const SIZE_STEPS = [20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64, 72, 80, 88, 96, 108, 120, 136, 152, 168, 192, 216, 240];
+
+/** 字幕サイズを1段階大きく(+1)／小さく(-1)する */
+function stepFontSize(dir) {
+  const s = P().style, cur = s.fontSize;
+  const next = dir > 0 ? SIZE_STEPS.find(v => v > cur) : [...SIZE_STEPS].reverse().find(v => v < cur);
+  if (next == null) { toast(dir > 0 ? 'これ以上大きくできません' : 'これ以上小さくできません'); return; }
+  pushUndo('字幕サイズの変更', true);
+  s.fontSize = next;
+  syncStylePanel();
+  changed({ lines: false, style: true });
+}
 
 function buildStylePanel() {
   const html = STYLE_FIELDS.map((f, i) => {
     if (f.sub) return `<div class="sub-title" data-i="${i}">${f.sub}</div>`;
+    if (f.type === 'sizeStep') return `<div class="size-step" data-i="${i}"><span class="size-step-label">字幕サイズ</span>
+      <button type="button" class="btn size-btn" data-size="-1" title="1段階小さく">↓ 小さく</button>
+      <span class="size-val" id="sizeVal"></span>
+      <button type="button" class="btn size-btn" data-size="1" title="1段階大きく">↑ 大きく</button></div>`;
     if (f.type === 'presets') return `<div class="preset-row">${Object.keys(STYLE_PRESETS).map(n => `<button class="btn preset" data-preset="${n}" title="1回押すとオン、もう1回押すとオフ">${n}</button>`).join('')}<button class="btn ghost" data-preset="__reset">初期値</button></div>`;
     if (f.type === 'pospad') return `<div data-i="${i}"><div class="pos-pad" id="posPad"><div class="dot"></div></div>
       <div class="preset-row" style="margin-top:6px"><button class="btn" data-pos="50,50">中央</button><button class="btn" data-pos="50,15">上</button><button class="btn" data-pos="50,85">下</button><button class="btn" data-pos="82,50">右（縦書き）</button><button class="btn" data-pos="18,50">左</button></div></div>`;
@@ -1093,6 +1179,8 @@ function buildStylePanel() {
       togglePreset(pre.dataset.preset);
       return;
     }
+    const sz = e.target.closest('[data-size]');
+    if (sz) { stepFontSize(Number(sz.dataset.size)); return; }
     const pos = e.target.closest('[data-pos]');
     if (pos) {
       const [x, y] = pos.dataset.pos.split(',').map(Number);
@@ -1188,6 +1276,9 @@ function syncStylePanel() {
   note.textContent = !curFam ? '' : IS_IOS
     ? `「${curFam}」はこの端末にありません（代わりのフォントで表示されます）。「＋ フォントファイルを追加…」でフォントファイルを読み込むと使えます。`
     : `「${curFam}」はこの Mac にまだありません。Font Book.app で検索して「ダウンロード」すると使えます（それまでは代わりのフォントで表示されます）。`;
+  $('#sizeVal').textContent = `${s.fontSize}px`;
+  $('#stylePanel [data-size="1"]').disabled = s.fontSize >= SIZE_STEPS[SIZE_STEPS.length - 1];
+  $('#stylePanel [data-size="-1"]').disabled = s.fontSize <= SIZE_STEPS[0];
   $$('#stylePanel [data-preset]').forEach(b => b.classList.toggle('on', b.dataset.preset === s.presetName));
   $$('#stylePanel [data-k]').forEach(el => {
     const k = el.dataset.k;
@@ -1430,7 +1521,6 @@ function activateProject(p) {
   syncStylePanel();
   recomputeCues();
   renderLines();
-  renderLibrary();
   renderVideoInfo();
   updateSaveState();
   db.setMeta('lastProjectId', p.id);
@@ -1582,6 +1672,15 @@ function applyCompact() {
   requestAnimationFrame(() => { fitStage(); timeline.layout(); });
 }
 
+/** 左の「歌詞・タイミング」を縮小表示（PC：細い帯 / スマホ：見出しだけ） */
+function setLeftCollapsed(on) {
+  $('#app').classList.toggle('left-collapsed', on);
+  $('#btnCollapseLeft').textContent = on ? '»' : '«';
+  $('#btnCollapseLeft').title = on ? '歌詞・タイミングを展開' : '歌詞・タイミングを縮小';
+  try { localStorage.setItem('lse.leftCollapsed', on ? '1' : '0'); } catch { /* 無視 */ }
+  requestAnimationFrame(() => { fitStage(); timeline.layout(); });
+}
+
 function bindUI() {
   $('#btnOpenVideo').onclick = openVideoDialog;
   $('#btnOpenVideo2').onclick = openVideoDialog;
@@ -1598,6 +1697,13 @@ function bindUI() {
     recordNow(e.timeStamp);
   });
   $('#btnUndo').onclick = undo;
+  $('#btnCueEdit').onclick = openCueTextDialog;
+  $('#btnCueSplit').onclick = splitCueAtPlayhead;
+  $('#btnCueDelete').onclick = deleteSelectedCue;
+  $('#btnHideLyric').addEventListener('pointerdown', e => { e.preventDefault(); endCurrentCue(e.timeStamp); });
+  $('#btnCollapseLeft').onclick = () => setLeftCollapsed(!$('#app').classList.contains('left-collapsed'));
+  $('#leftPanel').addEventListener('click', e => { if ($('#app').classList.contains('left-collapsed') && !e.target.closest('#btnCollapseLeft')) setLeftCollapsed(false); });
+  try { setLeftCollapsed(localStorage.getItem('lse.leftCollapsed') === '1'); } catch { /* 無視 */ }
   $('#btnMute').onclick = () => { video.muted = !video.muted; $('#btnMute').textContent = video.muted ? '🔇' : '🔊'; };
   $('#rate').onchange = e => { video.playbackRate = Number(e.target.value); };
   const seek = $('#seek');
@@ -1607,7 +1713,7 @@ function bindUI() {
   $('#btnExport').onclick = openExportDialog;
   $('#btnExport2').onclick = openExportDialog;
   $('#btnHelp').onclick = showHelp;
-  $('#btnEditLines').onclick = () => openLyricsEditor(null, 'project');
+  $('#btnEditLines').onclick = openLyricsEditor;
   $('#btnCursorTop').onclick = () => { const p = P(); p.editor.cursor = firstUnrecorded(p.lines, p.timings); changed(); scrollLineIntoView(p.lines[p.editor.cursor]?.id); };
   $('#btnClearTimings').onclick = () => {
     const p = P();
@@ -1630,7 +1736,6 @@ function bindUI() {
     }
     changed();
   };
-  $$('.tab').forEach(t => { t.onclick = () => switchTab(t.dataset.tab); });
   $('#projectName').addEventListener('change', e => { P().name = e.target.value.trim() || '無題'; S.dirty = true; autosave(); });
   $('#projectName').addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur(); });
   // プロジェクトメニュー
@@ -1710,6 +1815,7 @@ async function init() {
   activateProject(last ? normalizeProject(last) : newProject());
   if (!last) await saveProject(false);
   await restoreVideo();
+  await applyPendingLyricSet();
   requestAnimationFrame(loop);
   showInstallHint();
   // 開発・テスト用: ?video=URL で動画を読み込む

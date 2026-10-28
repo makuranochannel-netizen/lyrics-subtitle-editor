@@ -39,3 +39,22 @@ export function firstUnrecorded(lines, timings) {
   const i = lines.findIndex(l => !(timings[l.id] && timings[l.id].start != null));
   return i < 0 ? lines.length : i;
 }
+
+/**
+ * 歌詞ブロックを削除しても、残りのブロックの表示区間が変わらないようにする。
+ * 終了時刻が「自動」のブロックは削除で次の開始がずれると終了が延びてしまうため、
+ * 削除前の終了時刻を固定（明示的な end）にして、削除した区間を字幕なしの空白として残す。
+ * @param removeIds 削除する行IDの配列。timings は直接書き換える（removeIds のタイミングも削除する）
+ */
+export function removeCuesKeepingGaps(lines, timings, duration, removeIds) {
+  const remove = new Set(removeIds);
+  const before = new Map(buildCues(lines, timings, duration).map(c => [c.lineId, c.end]));
+  for (const id of remove) delete timings[id];
+  const rest = lines.filter(l => !remove.has(l.id));
+  for (const c of buildCues(rest, timings, duration)) {
+    const old = before.get(c.lineId);
+    if (old != null && isFinite(old) && Math.abs(c.end - old) > 1e-6 && timings[c.lineId].end == null) {
+      timings[c.lineId].end = +old.toFixed(3);
+    }
+  }
+}

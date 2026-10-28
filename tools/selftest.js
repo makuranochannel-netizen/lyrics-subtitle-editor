@@ -1,7 +1,7 @@
 // 自動セルフテスト：ロジックの単体テスト + 各種アスペクト比の書き出し検証（音ズレ・映像タイミング・字幕表示）
 import { makeTestVideo, detectBeeps } from './testvideo.js';
 import { exportVideo } from '../js/exporter.js';
-import { buildCues, activeCueAt, firstUnrecorded } from '../js/cues.js';
+import { buildCues, activeCueAt, firstUnrecorded, removeCuesKeepingGaps } from '../js/cues.js';
 import { mergeLines, parseTime, fmtTime } from '../js/util.js';
 import { DEFAULT_STYLE } from '../js/subtitle.js';
 import { readMovie, describeTracks, RangeReader } from '../js/demux.js';
@@ -22,6 +22,28 @@ export function unitTests() {
   const re = [lines[2], lines[0], lines[1]];
   cues = buildCues(re, { a: { start: 1 }, b: { start: 2.5 } }, 10);
   ok('並べ替え後もタイミング維持', cues.map(c => c.lineId).join() === 'a,b' && cues[0].index === 1);
+  // ブロック削除：削除した区間は空白のまま（前の終了を延ばさない・後の開始を変えない）
+  {
+    const L = [{ id: 'A', text: 'A' }, { id: 'B', text: 'B' }, { id: 'C', text: 'C' }];
+    const T = { A: { start: 0, end: null }, B: { start: 5, end: null }, C: { start: 10, end: null } };
+    removeCuesKeepingGaps(L, T, 15, ['B']);
+    const rest = L.filter(l => l.id !== 'B');
+    const cs = buildCues(rest, T, 15);
+    ok('削除後：前のブロックの終了は延びない（A 0〜5秒）', cs[0].lineId === 'A' && cs[0].start === 0 && cs[0].end === 5, JSON.stringify(cs.map(c => [c.lineId, c.start, c.end])));
+    ok('削除後：後のブロックの開始は変わらない（C 10〜15秒）', cs[1].lineId === 'C' && cs[1].start === 10 && cs[1].end === 15);
+    ok('削除後：削除した区間（5〜10秒）は字幕なし', [5, 7.5, 9.99].every(t => activeCueAt(cs, t) == null) && activeCueAt(cs, 4.9)?.lineId === 'A' && activeCueAt(cs, 10)?.lineId === 'C');
+    ok('削除後：保存用データ（JSON）にも空白が残る', JSON.stringify(T) === JSON.stringify({ A: { start: 0, end: 5 }, C: { start: 10, end: null } }), JSON.stringify(T));
+    // 最後のブロックを削除しても、直前のブロックは動画の最後まで延びない
+    const L2 = [{ id: 'A', text: 'A' }, { id: 'B', text: 'B' }];
+    const T2 = { A: { start: 0, end: null }, B: { start: 5, end: null } };
+    removeCuesKeepingGaps(L2, T2, 20, ['B']);
+    ok('最後のブロック削除：直前は動画の最後まで延びない', buildCues([L2[0]], T2, 20)[0].end === 5);
+    // 手動の終了時刻があるブロックや、無関係のブロックは変更しない
+    const L3 = [{ id: 'A', text: 'A' }, { id: 'B', text: 'B' }, { id: 'C', text: 'C' }];
+    const T3 = { A: { start: 0, end: 3 }, B: { start: 5, end: null }, C: { start: 10, end: null } };
+    removeCuesKeepingGaps(L3, T3, 15, ['A']);
+    ok('先頭ブロック削除：他のブロックは変更なし', JSON.stringify(T3) === JSON.stringify({ B: { start: 5, end: null }, C: { start: 10, end: null } }), JSON.stringify(T3));
+  }
   const m = mergeLines(lines, ['A', 'X', 'B', 'C改']);
   ok('歌詞再編集で行IDを維持', m[0].id === 'a' && m[2].id === 'b' && m[3].id === 'c' && !['a', 'b', 'c'].includes(m[1].id), JSON.stringify(m));
   const m2 = mergeLines(lines, ['A', 'B改', 'C']);

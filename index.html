@@ -46,9 +46,10 @@
   <main class="workspace">
     <!-- 左：歌詞とタイミング -->
     <aside class="panel left" id="leftPanel">
-      <div class="tabs">
-        <button class="tab active" data-tab="timing">歌詞・タイミング</button>
-        <button class="tab" data-tab="library">歌詞ライブラリ</button>
+      <div class="left-head">
+        <button id="btnCollapseLeft" class="btn icon sm ghost" title="歌詞・タイミングを縮小 / 展開">«</button>
+        <span class="left-title">歌詞・タイミング</span>
+        <button id="btnOpenLibrary" class="btn sm" title="歌詞ライブラリを別タブで開く">📚 歌詞ライブラリ ↗</button>
       </div>
       <section class="tab-body" data-tab="timing">
         <div class="lyric-head">
@@ -57,8 +58,7 @@
             <div id="recordStatus" class="muted small"></div>
           </div>
           <div class="row-btns">
-            <button id="btnPickLyrics" class="btn sm">ライブラリから</button>
-            <button id="btnEditLines" class="btn sm">歌詞を編集</button>
+            <button id="btnEditLines" class="btn sm" title="歌詞全体をテキストで編集">全体を編集</button>
           </div>
         </div>
         <div class="progress-line"><div id="recordProgress"></div></div>
@@ -70,15 +70,9 @@
         <ol id="lineList" class="line-list"></ol>
         <div id="lineEmpty" class="empty-hint" hidden>
           <p>まず歌詞を設定してください。</p>
-          <button class="btn primary" id="btnEmptyNew">歌詞を新規作成</button>
+          <button class="btn primary" id="btnEmptyNew">歌詞を入力</button>
+          <button class="btn" id="btnEmptyLib">📚 ライブラリから選ぶ</button>
         </div>
-      </section>
-      <section class="tab-body" data-tab="library" hidden>
-        <div class="lib-head">
-          <button id="btnNewLyrics" class="btn primary sm">＋ 新しい歌詞</button>
-          <input id="libSearch" type="search" placeholder="検索">
-        </div>
-        <ul id="libraryList" class="lib-list"></ul>
       </section>
     </aside>
 
@@ -114,7 +108,12 @@
           <span class="tap-label"><span class="rec-dot"></span><span id="recordHint">次に記録する歌詞</span><kbd id="recordKeyLabel" hidden>Shift</kbd></span>
           <span id="nextLyric" class="next-lyric">—</span>
         </button>
+        <button id="btnHideLyric" class="btn sm hide-btn" title="表示中の歌詞をこの時刻で消す（間奏など）。キーボードは E">⏹ 歌詞を消す</button>
         <button id="btnUndo" class="btn sm" title="直前の操作を取り消す（⌘/Ctrl+Z）">↶ 取り消し</button>
+      </div>
+      <div class="design-dock" id="designDock">
+        <button type="button" class="panel-title collapsible" id="styleTitle" title="クリックで開閉">字幕デザイン<span class="chev">▾</span></button>
+        <div id="stylePanel" class="style-panel"></div>
       </div>
     </section>
 
@@ -140,8 +139,6 @@
       </div>
       <div class="panel-title">動画情報</div>
       <div id="videoInfo" class="style-panel small muted">動画が読み込まれていません</div>
-      <button type="button" class="panel-title collapsible" id="styleTitle" title="クリックで開閉">字幕デザイン<span class="chev">▾</span></button>
-      <div id="stylePanel" class="style-panel"></div>
     </aside>
   </main>
 
@@ -152,7 +149,12 @@
       <span id="tlTime" class="time small">0:00.000</span>
       <label class="small muted">ズーム <input id="tlZoom" type="range" min="10" max="400" value="80"></label>
       <label class="small muted"><input id="tlFollow" type="checkbox" checked> 再生位置を追従</label>
-      <span class="muted small tl-hint">ブロックをドラッグで移動・端をドラッグで開始/終了を調整・空白クリックでシーク</span>
+      <div class="tl-sel" id="tlSel">
+        <span class="tl-sel-label" id="tlSelLabel">ブロックを選ぶと修正・分割・削除できます</span>
+        <button id="btnCueEdit" class="btn sm" title="選んだ歌詞の文字を修正">✏️ 修正</button>
+        <button id="btnCueSplit" class="btn sm" title="選んだブロックを赤い線（再生位置）の位置で2つのブロックに分ける">✂ カーソル位置で分割</button>
+        <button id="btnCueDelete" class="btn sm danger" title="選んだ歌詞を削除">🗑 削除</button>
+      </div>
       <div class="spacer"></div>
       <button id="btnCompact" class="btn sm ghost" title="タイムラインを縮めてプレビューを大きくする">⤢ プレビュー拡大</button>
       <button id="btnExport2" class="btn accent sm">MP4 書き出し</button>

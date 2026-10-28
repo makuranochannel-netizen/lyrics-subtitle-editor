@@ -58,11 +58,21 @@ input[type=color] { width: 34px; height: 24px; padding: 0; border: 1px solid var
 .panel { background: var(--bg2); display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .panel.left { width: var(--left-w); border-right: 1px solid var(--line); flex-shrink: 0; }
 .panel.right { width: var(--right-w); border-left: 1px solid var(--line); overflow-y: auto; flex-shrink: 0; }
-.tabs { display: flex; border-bottom: 1px solid var(--line); }
-.tab { flex: 1; background: none; border: 0; border-bottom: 2px solid transparent; padding: 10px 0; cursor: pointer; color: var(--muted); }
-.tab.active { color: var(--fg); border-bottom-color: var(--accent); }
 .tab-body { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .panel-title { font-weight: 700; padding: 12px 14px 6px; font-size: 12px; color: var(--muted); letter-spacing: .05em; }
+
+/* 歌詞・タイミング（見出し・縮小表示） */
+.left-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.left-title { flex: 1; font-weight: 700; white-space: nowrap; }
+#app.left-collapsed .panel.left { width: 44px; cursor: pointer; }
+#app.left-collapsed .panel.left .tab-body, #app.left-collapsed #btnOpenLibrary { display: none; }
+#app.left-collapsed .left-head { flex-direction: column; border-bottom: 0; padding: 8px 4px; height: 100%; }
+#app.left-collapsed .left-title { writing-mode: vertical-rl; flex: none; color: var(--muted); letter-spacing: .1em; }
+.text-edit { flex: 1; display: grid; gap: 6px; min-width: 0; }
+.text-edit-btns { display: flex; gap: 4px; flex-wrap: wrap; }
+.line-actions + .line-actions { border-top: 1px dashed var(--line); padding-top: 6px; }
+.hide-btn { color: #ffd38a; }
+#app.recording .hide-btn { background: #3b2f12; border-color: #806221; }
 
 /* 歌詞・タイミング */
 .lyric-head { display: flex; justify-content: space-between; gap: 8px; padding: 10px 12px 6px; align-items: flex-start; }
@@ -112,6 +122,16 @@ input[type=color] { width: 34px; height: 24px; padding: 0; border: 1px solid var
 .lib-item-btns { display: flex; gap: 3px; flex-wrap: wrap; }
 .lib-item-btns .btn { padding: 2px 7px; font-size: 11px; }
 
+/* 歌詞ライブラリ（別ページ） */
+body.page-library { overflow: auto; }
+.lib-topbar { position: sticky; top: 0; z-index: 10; padding-top: env(safe-area-inset-top); min-height: 54px; }
+.lib-topbar a.btn { text-decoration: none; color: var(--fg); }
+.lib-page { max-width: 1100px; margin: 0 auto; padding: 16px; padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
+.lib-page-head { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; }
+.lib-page-head input { flex: 1; min-width: 0; }
+.lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; padding: 0; overflow: visible; }
+.lib-grid .lib-item { margin: 0; }
+
 /* 中央 */
 .center { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #0b0c10; }
 .stage-wrap { flex: 1; position: relative; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; padding: 10px; }
@@ -148,6 +168,18 @@ input[type=color] { width: 34px; height: 24px; padding: 0; border: 1px solid var
 #app.recording .stage { box-shadow: 0 0 0 2px var(--accent), 0 10px 40px #000a; }
 .next-lyric { flex: 1; font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* 字幕デザイン（動画のすぐ下） */
+/* PC：プレビューの高さを優先し、残りの高さで字幕デザインをスクロール表示する */
+.design-dock { flex: 0 1 auto; min-height: 44px; max-height: 42vh; overflow-y: auto; background: var(--bg2); border-top: 1px solid var(--line); }
+.center > .stage-wrap { min-height: min(52vh, 560px); }
+.design-dock .panel-title.collapsible { margin-top: 0; border-top: 0; padding: 10px 14px; position: sticky; top: 0; background: var(--bg2); z-index: 2; }
+.design-dock .style-panel { grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); column-gap: 22px; padding-bottom: 14px; }
+.design-dock .sub-title, .design-dock .preset-row, .design-dock .font-note, .design-dock .size-step { grid-column: 1 / -1; }
+.size-step { display: flex; align-items: center; gap: 8px; padding: 2px 0 4px; }
+.size-step-label { font-weight: 700; margin-right: 4px; }
+.size-btn { min-width: 92px; padding: 8px 12px; font-size: 14px; font-weight: 700; touch-action: manipulation; }
+.size-val { min-width: 56px; text-align: center; font-variant-numeric: tabular-nums; font-weight: 700; font-size: 15px; }
+
 /* 右：スタイル */
 .style-panel { padding: 4px 14px 10px; display: grid; gap: 8px; }
 .field { display: grid; grid-template-columns: 92px 1fr; align-items: center; gap: 8px; min-height: 26px; }
@@ -179,9 +211,13 @@ input[type=color] { width: 34px; height: 24px; padding: 0; border: 1px solid var
 
 /* タイムライン */
 .timeline-area { background: var(--bg2); border-top: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
-.tl-toolbar { display: flex; align-items: center; gap: 12px; padding: 5px 12px; border-bottom: 1px solid var(--line); }
+.tl-toolbar { display: flex; align-items: center; gap: 12px; padding: 5px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; row-gap: 5px; }
 .tl-toolbar label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
-.tl-hint { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tl-sel { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 0 1 auto; padding: 3px 4px 3px 10px; border: 1px dashed var(--line); border-radius: 8px; }
+.tl-sel.active { border-style: solid; border-color: var(--cue-sel); background: #2a1820; }
+.tl-sel-label { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
+.tl-sel.active .tl-sel-label { color: var(--fg); font-weight: 600; }
+
 .timeline { touch-action: pan-x; flex: 1; overflow-x: auto; overflow-y: hidden; position: relative; outline: none; }
 .tl-inner { position: relative; height: 100%; min-width: 100%; }
 .tl-ruler { position: absolute; top: 0; left: 0; height: 22px; display: block; }
@@ -201,7 +237,6 @@ input[type=color] { width: 34px; height: 24px; padding: 0; border: 1px solid var
 #app.compact { --tl-h: 92px; }
 #app.compact .tl-wave { display: none; }
 #app.compact .tl-cues { top: 26px; bottom: 4px; }
-#app.compact .tl-hint { display: none; }
 
 /* モーダル・トースト */
 .modal { position: fixed; inset: 0; background: #000a; display: flex; align-items: center; justify-content: center; z-index: 100; padding: 16px; }
@@ -235,11 +270,13 @@ input[type=color] { width: 34px; height: 24px; padding: 0; border: 1px solid var
   #app { display: flex; flex-direction: column; height: auto; min-height: 100vh; }
   .topbar { flex-wrap: wrap; padding: 8px 12px; min-height: 50px; }
   .workspace { display: contents; }
-  .center { order: 1; height: 78vh; min-height: 480px; flex: none; }
+  .center { order: 1; height: auto; flex: none; }
+  .stage-wrap { height: 64vh; height: 64dvh; min-height: 420px; flex: none; }
+  .design-dock { max-height: none; min-height: 0; }
+  .center > .stage-wrap { min-height: 420px; }
   .timeline-area { order: 2; height: var(--tl-h); flex: none; }
   .panel.left { order: 3; width: 100%; height: 60vh; border-right: 0; border-top: 1px solid var(--line); flex: none; }
   .panel.right { order: 4; width: 100%; border-left: 0; border-top: 1px solid var(--line); overflow: visible; flex: none; }
-  .tl-hint { display: none; }
 }
 
 .install-hint { position: fixed; left: 8px; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom)); z-index: 150; display: flex; gap: 10px; align-items: flex-start; background: #1f2c45; border: 1px solid var(--primary); border-radius: 12px; padding: 12px; font-size: 13px; line-height: 1.5; box-shadow: 0 10px 30px #000a; }
@@ -247,7 +284,7 @@ input[type=color] { width: 34px; height: 24px; padding: 0; border: 1px solid var
 
 /* スマートフォン（iPhone 縦持ちなど） */
 @media (max-width: 700px) {
-  :root { --tl-h: 120px; font-size: 14px; }
+  :root { --tl-h: 250px; font-size: 14px; }
   .brand, #saveState, #btnHelp { display: none; }
   .topbar { gap: 6px; padding: 6px 8px; }
   .project-name { flex: 1 1 100%; order: -1; width: auto; font-size: 15px; }
@@ -256,6 +293,7 @@ input[type=color] { width: 34px; height: 24px; padding: 0; border: 1px solid var
   #btnExport { margin-left: auto; }
   .center { height: auto; min-height: 0; }
   .stage-wrap { height: 52vh; height: 52dvh; min-height: 300px; flex: none; padding: 6px; }
+  .center > .stage-wrap { min-height: 300px; }
   .transport { flex-wrap: wrap; gap: 6px; padding: 6px 8px; }
   .transport .seek { order: 5; flex: 1 1 100%; height: 28px; }
   .record-bar { flex-wrap: wrap; padding: 8px; position: sticky; bottom: 0; z-index: 20; padding-bottom: calc(8px + env(safe-area-inset-bottom)); }
@@ -266,7 +304,15 @@ input[type=color] { width: 34px; height: 24px; padding: 0; border: 1px solid var
   #btnUndo { margin-left: auto; }
   .tl-toolbar { flex-wrap: wrap; gap: 8px; padding: 5px 8px; }
   .tl-toolbar label:first-of-type { display: none; }
+  .tl-sel { flex: 1 1 100%; order: -1; flex-wrap: wrap; }
+  .tl-sel-label { flex: 1 1 100%; max-width: none; }
+  .tl-sel .btn { flex: 1; padding: 7px 6px; }
   .panel.left { height: 70vh; height: 70dvh; }
+  #app.left-collapsed .panel.left { width: 100%; height: auto; }
+  #app.left-collapsed .left-head { flex-direction: row; height: auto; }
+  #app.left-collapsed .left-title { writing-mode: horizontal-tb; flex: 1; }
+  .lib-grid { grid-template-columns: 1fr; }
+  .lib-topbar .brand { display: block; }
   .line { padding: 9px 8px; }
   .line-handle { display: none; }
   .adj { grid-template-columns: 1fr; gap: 3px; }

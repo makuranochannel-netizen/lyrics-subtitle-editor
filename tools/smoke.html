@@ -10,7 +10,7 @@ f.addEventListener('load', () => {
     const d = w.document, a = w.app;
     const fam = d.querySelector('#fontSelect');
     const R = { errs, hasProject: !!a?.project, fonts: fam ? [...fam.querySelectorAll('optgroup')].map(g => g.label + '(' + g.children.length + ')') : null,
-      tapBtn: !!d.querySelector('#btnTap'), toast: d.querySelector('#toast')?.textContent };
+      tapBtn: !!d.querySelector('#btnTap'), hideBtn: !!d.querySelector('#btnHideLyric'), libBtn: !!d.querySelector('#btnOpenLibrary'), toast: d.querySelector('#toast')?.textContent };
     document.getElementById('o').textContent = JSON.stringify(R, null, 1);
     fetch('/report', { method: 'POST', body: JSON.stringify(R, null, 1) });
   }, 2500);

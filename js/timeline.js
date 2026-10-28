@@ -183,7 +183,7 @@ export class Timeline {
     if (d?.mode === 'tap') { if (Math.abs(e.clientX - d.x0) < 8) this.onSeek?.(this.timeAt(e.clientX)); return; }
     if (d && d.mode !== 'scrub') {
       if (d.moved) this.onDragEnd?.(d.id);
-      else this.onSelect?.(d.id, true);
+      else { this.onSelect?.(d.id, false); this.onSeek?.(this.timeAt(e.clientX)); } // クリックした位置へ再生位置を移動（分割位置の指定に使う）
     }
   }
 }
