@@ -97,6 +97,12 @@ input[type=color] { width: 34px; height: 24px; padding: 0; border: 1px solid var
 @keyframes pulse { 50% { opacity: .35; } }
 .line-text { flex: 1; word-break: break-all; line-height: 1.45; }
 .line-time { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* 各行の「ここから記録」 */
+.line-rec { flex-shrink: 0; align-self: center; background: transparent; border: 1px solid var(--line); color: var(--muted); border-radius: 999px; font-size: 10px; padding: 1px 7px; cursor: pointer; white-space: nowrap; opacity: 0; transition: opacity .12s; }
+.line:hover .line-rec, .line.selected .line-rec, .line.cursor .line-rec { opacity: 1; }
+.line-rec:hover { border-color: var(--accent); color: #ffb3c6; }
+.line.cursor .line-rec { background: #4a1a2b; border-color: var(--accent); color: #ffb3c6; font-weight: 700; }
+@media (hover: none) { .line-rec { opacity: 1; font-size: 11px; padding: 3px 8px; } }
 .line.recorded .line-time { color: #9fd9bf; }
 .line-handle { cursor: grab; color: var(--muted); padding: 0 2px; user-select: none; }
 .line-edit { margin-top: 7px; display: grid; gap: 6px; cursor: default; }

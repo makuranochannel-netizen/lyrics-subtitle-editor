@@ -94,6 +94,7 @@
         <div id="reloadBanner" class="reload-banner" hidden></div>
       </div>
       <div class="transport">
+        <button id="btnToStart" class="btn icon" title="0:00 に戻る">⏮</button>
         <button id="btnPlay" class="btn icon" title="再生/一時停止 (Space)">▶</button>
         <span id="timeCur" class="time">0:00.000</span><span class="muted">/</span><span id="timeDur" class="time muted">0:00.000</span>
         <input id="seek" type="range" min="0" max="1000" step="1" value="0" class="seek">
@@ -145,6 +146,7 @@
   <!-- 下：タイムライン -->
   <footer class="timeline-area">
     <div class="tl-toolbar">
+      <button id="btnToStart2" class="btn sm" title="0:00 に戻る">⏮ 0:00</button>
       <button id="btnPlay2" class="btn icon sm" title="再生/一時停止">▶</button>
       <span id="tlTime" class="time small">0:00.000</span>
       <label class="small muted">ズーム <input id="tlZoom" type="range" min="10" max="400" value="80"></label>

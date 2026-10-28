@@ -636,7 +636,8 @@ function renderLines() {
     }
     return `<li class="${cls}" data-id="${l.id}">
       <div class="line-main"><span class="line-handle" draggable="true" title="ドラッグで並べ替え">⋮⋮</span><span class="line-no">${i + 1}</span><span class="line-dot"></span>
-      <span class="line-text">${escapeHtml(l.text)}</span><span class="line-time">${timeText}</span></div>${edit}</li>`;
+      <span class="line-text">${escapeHtml(l.text)}</span><span class="line-time">${timeText}</span>
+      <button class="line-rec" data-a="cursorHere" title="${i === p.editor.cursor ? 'ここから記録します' : 'この行から記録を始める（記録済みの行も記録し直せます）'}">${i === p.editor.cursor ? '● 記録位置' : '● ここから'}</button></div>${edit}</li>`;
   }).join('');
   list.scrollTop = scroll;
 }
@@ -686,6 +687,28 @@ function moveLine(from, to) {
   changed();
 }
 
+/**
+ * 記録を始める位置（行）を指定する。記録済みの行も選べ、記録するとその行のタイミングを上書きする。
+ * 記録済みの行なら、その少し前に再生位置を戻して記録し直しやすくする。
+ */
+function setRecordStart(idx) {
+  const p = P();
+  const line = p.lines[idx];
+  if (!line) return;
+  p.editor.cursor = idx;
+  changed();
+  const t = p.timings[line.id];
+  const prev = idx > 0 ? p.timings[p.lines[idx - 1].id] : null;
+  const how = S.recordMode ? '' : '（「● 記録開始」で記録モードにしてください）';
+  if (S.file && t?.start != null) {
+    if (!S.recordMode) seekTo(Math.max(0, t.start - 2));
+    toast(`${idx + 1}行目から記録し直します${how}。記録すると今のタイミングは上書きされます`);
+  } else {
+    if (S.file && !S.recordMode && prev?.start != null) seekTo(prev.start);
+    toast(`${idx + 1}行目から記録します${how}`);
+  }
+}
+
 function setupLineList() {
   const list = $('#lineList');
   list.addEventListener('click', e => {
@@ -714,9 +737,7 @@ function setupLineList() {
       } else if (a === 'play') {
         if (cue) { seekTo(cue.start); video.play(); }
       } else if (a === 'cursorHere') {
-        p.editor.cursor = idx;
-        changed();
-        toast(`${idx + 1}行目から記録します。${keyLabel(p.editor.recordKey)} で記録`);
+        setRecordStart(idx);
       } else if (a === 'clearTiming') {
         pushUndo(`${idx + 1}行目のタイミング消去`);
         removeCuesKeepingGaps(p.lines, p.timings, video.duration || p.video?.duration, [id]);
@@ -1689,6 +1710,9 @@ function bindUI() {
   $('#fileFont').onchange = e => { const f = e.target.files[0]; if (f) addFontFile(f); e.target.value = ''; };
   $('#btnPlay').onclick = togglePlay;
   $('#btnPlay2').onclick = togglePlay;
+  const toStart = () => { if (!S.file) return; seekTo(0); timeline.scrollToTime(0); };
+  $('#btnToStart').onclick = toStart;
+  $('#btnToStart2').onclick = toStart;
   $('#btnRecord').onclick = toggleRecordMode;
   // 記録ボタン（iPhone 用）。指が触れた瞬間（pointerdown）の時刻で記録する
   $('#btnTap').addEventListener('pointerdown', e => {
