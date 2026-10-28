@@ -1,0 +1,17 @@
+{
+  "name": "歌詞字幕エディタ",
+  "short_name": "歌詞字幕",
+  "description": "動画を再生しながら歌詞のタイミングを記録し、字幕入りの動画を書き出すアプリ",
+  "lang": "ja",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#121318",
+  "theme_color": "#121318",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

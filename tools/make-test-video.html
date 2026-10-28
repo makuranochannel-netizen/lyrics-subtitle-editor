@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><title>テスト動画ジェネレーター</title>
+<script src="../vendor/mp4-muxer.min.js"></script>
+<style>body{font-family:sans-serif;background:#16181f;color:#eee;padding:24px}button{margin:4px;padding:8px 14px}a{color:#8cf;display:block;margin:4px 0}</style></head>
+<body>
+<h1>テスト動画ジェネレーター</h1>
+<p>毎秒ちょうどにビープ音と白フラッシュが入った検証用 MP4 を生成します（音ズレ確認用）。</p>
+<button data-c='{"width":1080,"height":1920,"rotation":90}'>iPhone風 縦 9:16（回転メタデータ付き）</button>
+<button data-c='{"width":1920,"height":1080}'>横 16:9</button>
+<button data-c='{"width":1080,"height":1080}'>正方形 1:1</button>
+<button data-c='{"width":1080,"height":1920,"codec":"hevc"}'>縦 9:16 HEVC</button>
+<div id="out"></div>
+<script type="module">
+import { makeTestVideo } from './testvideo.js';
+document.querySelectorAll('button').forEach(b => b.onclick = async () => {
+  b.disabled = true;
+  try { const f = await makeTestVideo({ seconds: 10, ...JSON.parse(b.dataset.c) });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = f.name; a.textContent = `${f.name} (${(f.size/1e6).toFixed(1)} MB)`; document.getElementById('out').appendChild(a);
+  } catch (e) { alert(e.message); } b.disabled = false;
+});
+</script></body></html>

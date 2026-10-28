@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><title>セルフテスト</title>
+<script src="../vendor/mp4box.all.min.js"></script><script src="../vendor/mp4-muxer.min.js"></script>
+<style>body{font-family:-apple-system,sans-serif;background:#16181f;color:#eee;padding:24px}li{margin:4px 0}.p{color:#5c9}.f{color:#f66}small{color:#999;display:block;white-space:pre-wrap;word-break:break-all}</style></head>
+<body><h1>歌詞字幕エディタ セルフテスト</h1><p id="sum">実行中…</p><ul id="list"></ul>
+<script type="module">
+import { runAll } from './selftest.js';
+const render = rs => { document.getElementById('list').innerHTML = rs.map(r => `<li class="${r.pass ? 'p' : 'f'}">${r.pass ? '✓' : '✗'} ${r.name}${!r.pass && r.detail ? `<small>${r.detail}</small>` : ''}</li>`).join(''); };
+const rs = await runAll(render);
+render(rs);
+const fail = rs.filter(r => !r.pass).length;
+document.getElementById('sum').textContent = fail ? `${fail} 件失敗 / ${rs.length} 件` : `すべて成功（${rs.length} 件）`;
+window.__selftest = rs;
+</script></body></html>
