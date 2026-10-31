@@ -2,7 +2,7 @@
 // エディタとは IndexedDB を共有し、「このプロジェクトで使う」は BroadcastChannel でエディタに伝える。
 // エディタが開いていない場合（iPhone で同じ画面内で開いた場合など）は、読み込み待ちとして保存してからエディタへ戻る。
 import { db } from './db.js';
-import { uid, deepClone, escapeHtml, mergeLines, splitLyrics } from './util.js';
+import { uid, deepClone, escapeHtml, parseLyricsText, lyricsToText, mergeLyricsText } from './util.js';
 import { LIB_CHANNEL, PENDING_KEY } from './library-link.js';
 
 const $ = s => document.querySelector(s);
@@ -24,6 +24,7 @@ function render() {
     <li class="lib-item ${s.id === inUseId ? 'in-use' : ''}" data-id="${s.id}">
       <div class="lib-item-title">${escapeHtml(s.title || '（無題）')}</div>
       <div class="lib-item-sub">${s.artist ? escapeHtml(s.artist) + '・' : ''}${s.lines.length}行・更新 ${new Date(s.updatedAt).toLocaleDateString('ja-JP')}${s.id === inUseId ? '・<b style="color:var(--primary)">使用中</b>' : ''}</div>
+      ${s.lines.some(l => l.section) ? `<div class="lib-item-secs">${s.lines.filter(l => l.section).map(l => `<span class="sec-chip">${escapeHtml(l.section)}</span>`).join('')}</div>` : ''}
       <div class="lib-item-preview">${escapeHtml(s.lines.slice(0, 3).map(l => l.text).join(' / '))}</div>
       <div class="lib-item-btns">
         <button class="btn primary" data-a="use">このプロジェクトで使う</button>
@@ -80,8 +81,8 @@ function openEditor(set) {
     <div class="modal-body">
       <label class="block"><span>楽曲名</span><input id="edTitle" value="${escapeHtml(set?.title || '')}" placeholder="例：朝焼けのカーテン"></label>
       <label class="block"><span>アーティスト（任意）</span><input id="edArtist" value="${escapeHtml(set?.artist || '')}"></label>
-      <label class="block"><span>歌詞（1行＝1字幕。空行は無視されます）</span>
-        <textarea id="edLines" placeholder="もう朝焼けがカーテンを染める&#10;君のいない部屋で目を覚ます">${escapeHtml((set?.lines || []).map(l => l.text).join('\n'))}</textarea></label>
+      <label class="block"><span>歌詞（1行＝1字幕。空行は無視されます。<b>[Aメロ]</b> のように括弧だけの行を書くと、次の行からがそのセクションになります）</span>
+        <textarea id="edLines" placeholder="[Aメロ]&#10;もう朝焼けがカーテンを染める&#10;君のいない部屋で目を覚ます&#10;&#10;[サビ]&#10;昨日の続きを探している">${escapeHtml(lyricsToText(set?.lines || []))}</textarea></label>
       <div class="muted small" id="edCount"></div>
     </div>
     <div class="modal-foot">
@@ -91,17 +92,17 @@ function openEditor(set) {
     </div>`;
   $('#modal').hidden = false;
   const ta = $('#edLines');
-  const count = () => { $('#edCount').textContent = `${splitLyrics(ta.value).length} 行`; };
+  const count = () => { const x = parseLyricsText(ta.value); const n = x.filter(l => l.section).length; $('#edCount').textContent = `${x.length} 行${n ? `・セクション ${n} 個` : ''}`; };
   ta.addEventListener('input', count);
   count();
   setTimeout(() => (set ? ta : $('#edTitle')).focus(), 50);
   const doSave = async use => {
-    const texts = splitLyrics(ta.value);
+    const texts = parseLyricsText(ta.value);
     if (!texts.length) { toast('歌詞を1行以上入力してください', true); return; }
     const s = set ? deepClone(set) : { id: uid('s_'), createdAt: Date.now(), order: -1, lines: [] };
     s.title = $('#edTitle').value.trim() || '無題の歌詞';
     s.artist = $('#edArtist').value.trim();
-    s.lines = mergeLines(s.lines, texts);
+    s.lines = mergeLyricsText(s.lines, ta.value);
     await save(s);
     if (!set) await renumber();
     closeModal();
@@ -159,7 +160,7 @@ $('#libraryList').addEventListener('click', async e => {
   if (a === 'edit') openEditor(set);
   if (a === 'dup') {
     const copy = { ...deepClone(set), id: uid('s_'), title: `${set.title}（コピー）`, createdAt: Date.now(), order: (set.order ?? 0) + 0.5 };
-    copy.lines = copy.lines.map(l => ({ id: uid('l_'), text: l.text }));
+    copy.lines = copy.lines.map(l => ({ id: uid('l_'), text: l.text, ...(l.section ? { section: l.section } : {}) }));
     await save(copy);
     await renumber();
     toast('歌詞を複製しました');

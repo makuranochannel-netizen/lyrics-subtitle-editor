@@ -58,3 +58,18 @@ export function removeCuesKeepingGaps(lines, timings, duration, removeIds) {
     }
   }
 }
+
+/**
+ * セクションごとの書き出し区間。区間 = そのセクションで記録済みの行の最初の開始〜最後の終了。
+ * 記録済みの行が無いセクションは start/end が null。
+ * @param sections util.sectionsOf() の結果
+ * @returns {{name, from, to, lineIds, start, end, cues}[]}
+ */
+export function sectionRanges(sections, cues) {
+  return sections.map(s => {
+    const ids = new Set(s.lineIds);
+    const own = cues.filter(c => ids.has(c.lineId));
+    if (!own.length) return { ...s, start: null, end: null, cues: [] };
+    return { ...s, start: Math.min(...own.map(c => c.start)), end: Math.max(...own.map(c => c.end)), cues: own };
+  });
+}

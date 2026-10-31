@@ -112,3 +112,62 @@ export function mergeLines(oldLines, newTexts) {
 
 export const splitLyrics = text =>
   text.replace(/\r\n?/g, '\n').split('\n').map(s => s.trim()).filter(s => s.length > 0);
+
+// ---- セクション（Aメロ・Bメロ・サビなど） ----
+// 歌詞テキストでは「[Aメロ]」のように括弧だけの行を書くと、その直後の行からが そのセクションになる。
+// 保存時は、各セクションの最初の行に section（名前）を持たせる（行IDとタイミングには影響しない）。
+const SECTION_RE = /^[[［【]\s*([^\]］】]{1,40}?)\s*[\]］】]$/;
+
+/** 歌詞テキスト → [{text, section?}]（空行は無視。見出しだけで後ろに行が無いものは捨てる） */
+export function parseLyricsText(text) {
+  const out = [];
+  let pending = null;
+  for (const raw of text.replace(/\r\n?/g, '\n').split('\n')) {
+    const s = raw.trim();
+    if (!s) continue;
+    const m = s.match(SECTION_RE);
+    if (m) { pending = m[1].trim(); continue; }
+    out.push(pending ? { text: s, section: pending } : { text: s });
+    pending = null;
+  }
+  return out;
+}
+
+/** 行配列 → 編集用テキスト（セクションの前に空行と [名前] を入れる） */
+export function lyricsToText(lines) {
+  return lines.map((l, i) => (l.section ? `${i ? '\n' : ''}[${l.section}]\n` : '') + l.text).join('\n');
+}
+
+/** 再編集したテキストを、行IDを維持したまま行配列にする（セクションも反映） */
+export function mergeLyricsText(oldLines, text) {
+  const parsed = parseLyricsText(text);
+  return mergeLines(oldLines, parsed.map(x => x.text)).map((l, i) => (parsed[i].section ? { ...l, section: parsed[i].section } : l));
+}
+
+/**
+ * セクションの一覧。最初のセクション見出しより前の行は「（冒頭）」にまとめる。
+ * 見出しが1つも無い場合は空配列。
+ * @returns {{name, from, to, lineIds}[]}  from〜to-1 が行のインデックス
+ */
+export function sectionsOf(lines) {
+  if (!lines.some(l => l.section)) return [];
+  const out = [];
+  lines.forEach((l, i) => {
+    if (l.section || i === 0) out.push({ name: l.section || '（冒頭）', from: i, to: i + 1, lineIds: [l.id] });
+    else { const s = out[out.length - 1]; s.to = i + 1; s.lineIds.push(l.id); }
+  });
+  return out;
+}
+
+/** 同じ名前が重なるファイル名に _2, _3 … を付ける */
+export function uniqueNames(names) {
+  const used = new Set();
+  return names.map(n => {
+    const dot = n.lastIndexOf('.');
+    const stem = dot > 0 ? n.slice(0, dot) : n, ext = dot > 0 ? n.slice(dot) : '';
+    let name = n, k = 2;
+    while (used.has(name.toLowerCase())) name = `${stem}_${k++}${ext}`;
+    used.add(name.toLowerCase());
+    return name;
+  });
+}

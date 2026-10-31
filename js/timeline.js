@@ -32,6 +32,8 @@ export class Timeline {
 
   setZoom(pps) { this.pps = Math.max(5, Math.min(600, pps)); this.layout(); this.render(); }
   setDuration(d) { this.duration = d || 0; this.layout(); this.render(); }
+  /** セクションの区間 [{name, start, end}]（ルーラーに表示） */
+  setSections(list) { this.sections = list; this.drawCanvases(); }
   setPeaks(peaks, perSec) { this.peaks = peaks; this.peaksPerSec = perSec; this.drawCanvases(); }
 
   layout() {
@@ -66,6 +68,19 @@ export class Timeline {
       if (isMajor) ctx.fillText(fmtTime(t, major < 1), x + 3, 11);
     }
     ctx.stroke();
+    // セクション（Aメロ・サビなど）の開始位置と名前
+    if (this.sections?.length) {
+      ctx.font = 'bold 10px -apple-system, "Hiragino Sans", sans-serif';
+      for (const sec of this.sections) {
+        const x0 = sec.start * this.pps - sl, x1 = sec.end * this.pps - sl;
+        if (x1 < 0 || x0 > vw) continue;
+        ctx.fillStyle = 'rgba(255, 170, 60, 0.18)';
+        ctx.fillRect(Math.max(0, x0), 0, Math.min(vw, x1) - Math.max(0, x0), 14);
+        ctx.fillStyle = '#ffaa3c';
+        ctx.fillRect(Math.round(x0), 0, 2, h);
+        ctx.fillText(sec.name, Math.max(0, x0) + 4, 11);
+      }
+    }
     // 波形
     ctx = this.wave.getContext('2d');
     ctx.scale(dpr, dpr);

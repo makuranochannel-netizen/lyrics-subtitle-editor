@@ -66,7 +66,7 @@ async function prepareAudio(file, A, log) {
 }
 
 /** 音声チャンクを順にミュクサーへ流す（映像の進行に合わせてインターリーブ） */
-function audioPump(file, audio, muxer, offsetUs) {
+function audioPump(file, audio, muxer, offsetUs, endRelUs = Infinity) {
   if (!audio) return { pump: async () => {}, firstTs: null };
   const meta = { decoderConfig: { codec: 'mp4a.40.2', sampleRate: audio.sampleRate, numberOfChannels: audio.numberOfChannels, description: audio.description } };
   let sent = false, i = 0, lastTs = -1;
@@ -77,7 +77,16 @@ function audioPump(file, audio, muxer, offsetUs) {
   };
   if (audio.mode === 'encoded') {
     const list = audio.chunks;
-    return { pump: async (untilUs) => { while (i < list.length && list[i].ts - offsetUs <= untilUs) { const c = list[i++]; add(c.data, Math.max(0, c.ts - offsetUs), c.dur); } } };
+    return {
+      pump: async (untilUs) => {
+        while (i < list.length && list[i].ts - offsetUs <= untilUs) {
+          const c = list[i++];
+          if (c.ts - offsetUs >= endRelUs) { i = list.length; break; } // 範囲の終わり
+          if (c.ts + c.dur - offsetUs <= 0) continue; // 範囲の開始より前
+          add(c.data, Math.max(0, c.ts - offsetUs), c.dur);
+        }
+      },
+    };
   }
   const A = audio.A, reader = new RangeReader(file, 2 << 20);
   const S = A.samples;
@@ -88,8 +97,9 @@ function audioPump(file, audio, muxer, offsetUs) {
         const tsSec = s.cts / A.timescale - A.mediaStart + A.delay, durSec = s.duration / A.timescale;
         const ts = Math.round(tsSec * 1e6) - offsetUs;
         if (ts > untilUs) break;
+        if (ts >= endRelUs) { i = S.length; break; } // 範囲の終わり
         i++;
-        if (tsSec + durSec <= 1e-6) continue; // エディットリストで切り捨てられるプライミング部分
+        if (Math.round((tsSec + durSec) * 1e6) - offsetUs <= 0) continue; // エディットリストで切り捨てられるプライミング部分・範囲の開始より前
         add(await reader.read(s.offset, s.size), Math.max(0, ts), Math.round(durSec * 1e6));
       }
     },
@@ -109,10 +119,26 @@ function firstAudioUs(audio) {
 }
 
 /**
+ * 範囲書き出しの開始位置を、音声フレームの境目に合わせる（音声をコピーしても映像とずれないように）。
+ * 指定時刻以降で最初の音声フレームの開始 [µs]。音声が無ければ指定時刻のまま。
+ */
+function snapStartUs(audio, startUs) {
+  if (!audio) return startUs;
+  if (audio.mode === 'encoded') return audio.chunks.find(c => c.ts >= startUs - 1)?.ts ?? startUs;
+  const A = audio.A;
+  for (const s of A.samples) {
+    const t = Math.round((s.cts / A.timescale - A.mediaStart + A.delay) * 1e6);
+    if (t >= startUs - 1) return t;
+  }
+  return startUs;
+}
+
+/**
  * 動画を書き出す
  * @param {object} o
  *  file, cues, style, fontCss, fontFamily, quality('high'|'standard'|'light'),
- *  writable (FileSystemWritableFileStream | null), onProgress({phase, ratio, fps, eta, msg}), signal
+ *  writable (FileSystemWritableFileStream | null), onProgress({phase, ratio, fps, eta, msg}), signal,
+ *  range ({start, end} 秒・元動画の時刻。省略時は動画全体。セクションごとの書き出しに使う)
  * @returns {Promise<{blob?:Blob, width, height, frames, durationSec, codec, audioMode}>}
  */
 export async function exportVideo(o) {
@@ -153,7 +179,11 @@ export async function exportVideo(o) {
   onProgress({ phase: 'prep', ratio: 1, msg: '音声を準備中…' });
   const audio = await prepareAudio(file, T.audio, log);
   check();
-  const offsetUs = audio ? firstAudioUs(audio) : 0;
+  const range = o.range && o.range.end > o.range.start ? o.range : null;
+  // 出力の 0 秒 = 元動画の offsetUs。範囲書き出しでは範囲の開始（音声フレームの境目に合わせる）
+  const offsetUs = range ? snapStartUs(audio, Math.round(range.start * 1e6)) : audio ? firstAudioUs(audio) : 0;
+  const endRelUs = range && isFinite(range.end) ? Math.round(range.end * 1e6) - offsetUs : Infinity;
+  if (range) log(`範囲: ${(offsetUs / 1e6).toFixed(3)} 秒 〜 ${isFinite(range.end) ? range.end.toFixed(3) : '最後'} 秒`);
 
   const target = o.writable ? new Mp4Muxer.FileSystemWritableFileStreamTarget(o.writable) : new Mp4Muxer.ArrayBufferTarget();
   const muxer = new Mp4Muxer.Muxer({
@@ -163,7 +193,7 @@ export async function exportVideo(o) {
     fastStart: o.writable ? false : 'in-memory',
     firstTimestampBehavior: 'strict',
   });
-  const ap = audioPump(file, audio, muxer, offsetUs);
+  const ap = audioPump(file, audio, muxer, offsetUs, endRelUs);
 
   // ---- 合成と映像エンコード ----
   const canvas = new OffscreenCanvas(outW, outH);
@@ -205,6 +235,7 @@ export async function exportVideo(o) {
   // 0 より前（エディットリストで隠れる部分）は最後の1枚だけ保持し、0 の位置に出す
   const onFrame = (source, srcUs, durUs, release) => {
     const outUs = srcUs - offsetUs;
+    if (outUs >= endRelUs) { release(); return; } // 範囲の終わりより後
     if (!firstEmitted && outUs < 0) { held?.release(); held = { source, srcUs, durUs, release }; return; }
     if (!firstEmitted && held) {
       if (outUs > 0) emit(held.source, held.srcUs, 0, outUs);
@@ -214,7 +245,7 @@ export async function exportVideo(o) {
     release();
   };
 
-  const totalDur = V.duration || T.duration;
+  const totalDur = range ? Math.min(V.duration || T.duration || Infinity, endRelUs / 1e6 + offsetUs / 1e6) - offsetUs / 1e6 : V.duration || T.duration;
   const t0 = performance.now();
   const report = (curSec) => {
     const el = (performance.now() - t0) / 1000;
@@ -238,14 +269,20 @@ export async function exportVideo(o) {
       decoder.configure(decCfg);
       const reader = new RangeReader(file);
       const S = V.samples;
+      const tsOf = s => Math.round((s.cts / V.timescale - V.mediaStart + V.delay) * 1e6);
+      // 範囲書き出し：範囲の開始以前で最後のキーフレームからデコードを始める
+      let first = 0;
+      if (range) S.forEach((s, k) => { if (s.is_sync && tsOf(s) <= offsetUs) first = k; });
       let started = false, n = 0;
-      for (const s of S) {
+      for (let k = first; k < S.length; k++) {
+        const s = S[k];
         check();
         if (decErr) throw decErr;
         if (encErr) throw encErr;
         if (!started && !s.is_sync) continue;
         started = true;
-        const tsUs = Math.round((s.cts / V.timescale - V.mediaStart + V.delay) * 1e6);
+        const tsUs = tsOf(s);
+        if (tsUs - offsetUs > endRelUs + 2e6) break; // 範囲の終わりを過ぎた（Bフレームの並べ替え分の余裕を見て止める）
         decoder.decode(new EncodedVideoChunk({ type: s.is_sync ? 'key' : 'delta', timestamp: tsUs, duration: Math.round(s.duration / V.timescale * 1e6), data: await reader.read(s.offset, s.size) }));
         await waitQueues(decoder);
         await ap.pump(lastOutUs + 500000);
@@ -255,7 +292,7 @@ export async function exportVideo(o) {
       decoder.close();
       if (decErr) throw decErr;
     } else {
-      await captureRealtime(file, o, onFrame, () => { check(); if (encErr) throw encErr; }, async () => { await ap.pump(lastOutUs + 500000); report(lastOutUs / 1e6); }, totalDur);
+      await captureRealtime(file, o, onFrame, () => { check(); if (encErr) throw encErr; }, async () => { await ap.pump(lastOutUs + 500000); report(lastOutUs / 1e6); }, totalDur, range ? { startSec: offsetUs / 1e6, endSec: (offsetUs + endRelUs) / 1e6 } : null);
     }
     if (held) { emit(held.source, held.srcUs, 0, held.durUs); held.release(); held = null; }
     await encoder.flush();
@@ -276,7 +313,7 @@ export async function exportVideo(o) {
 }
 
 /** デコーダ非対応コーデック用：<video> を等速再生してフレームを取得（タイムスタンプは mediaTime を使用） */
-async function captureRealtime(file, o, onFrame, check, onStep, totalDur) {
+async function captureRealtime(file, o, onFrame, check, onStep, totalDur, range) {
   const v = document.createElement('video');
   v.muted = true; v.playsInline = true; v.preload = 'auto';
   v.style.cssText = 'position:fixed;left:-10000px;width:16px;height:16px;';
@@ -285,13 +322,14 @@ async function captureRealtime(file, o, onFrame, check, onStep, totalDur) {
   v.src = url;
   try {
     await new Promise((res, rej) => { v.onloadeddata = res; v.onerror = () => rej(new Error('動画を再生できません')); });
-    v.currentTime = 0;
+    v.currentTime = range ? Math.max(0, range.startSec - 0.1) : 0;
     await new Promise(r => { v.onseeked = r; });
     let done = false, err = null, lastMedia = -1;
     const onVf = (now, meta) => {
       if (done) return;
       try {
         check();
+        if (range && meta.mediaTime >= range.endSec) { done = true; v.pause(); return; }
         if (meta.mediaTime > lastMedia) {
           lastMedia = meta.mediaTime;
           onFrame(v, Math.round(meta.mediaTime * 1e6), 0, () => {});

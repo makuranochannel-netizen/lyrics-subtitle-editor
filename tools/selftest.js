@@ -1,8 +1,8 @@
 // 自動セルフテスト：ロジックの単体テスト + 各種アスペクト比の書き出し検証（音ズレ・映像タイミング・字幕表示）
 import { makeTestVideo, detectBeeps } from './testvideo.js';
 import { exportVideo } from '../js/exporter.js';
-import { buildCues, activeCueAt, firstUnrecorded, removeCuesKeepingGaps } from '../js/cues.js';
-import { mergeLines, parseTime, fmtTime } from '../js/util.js';
+import { buildCues, activeCueAt, firstUnrecorded, removeCuesKeepingGaps, sectionRanges } from '../js/cues.js';
+import { mergeLines, parseTime, fmtTime, parseLyricsText, lyricsToText, mergeLyricsText, sectionsOf, uniqueNames } from '../js/util.js';
 import { DEFAULT_STYLE } from '../js/subtitle.js';
 import { readMovie, describeTracks, RangeReader } from '../js/demux.js';
 
@@ -52,6 +52,51 @@ export function unitTests() {
   ok('行の入れ替えでもID維持', m3.find(x => x.text === 'C').id === 'c' && m3.find(x => x.text === 'A').id === 'a' && m3.find(x => x.text === 'B').id === 'b', JSON.stringify(m3));
   ok('時刻の解析', parseTime('1:23.456') === 83.456 && parseTime('12.5') === 12.5 && parseTime('abc') == null);
   ok('時刻の表示', fmtTime(83.456) === '1:23.456');
+  // セクション
+  {
+    const txt = '前奏の歌詞\n\n[Aメロ]\n一行目\n二行目\n\n【サビ】\n三行目\n[空の見出し]';
+    const parsed = parseLyricsText(txt);
+    ok('セクション：[名前] は次の行のセクションになる', JSON.stringify(parsed) === JSON.stringify([{ text: '前奏の歌詞' }, { text: '一行目', section: 'Aメロ' }, { text: '二行目' }, { text: '三行目', section: 'サビ' }]), JSON.stringify(parsed));
+    const L = parsed.map((x, i) => ({ id: 'l' + i, ...x }));
+    const txt2 = lyricsToText(L);
+    ok('セクション：テキストに戻して読み直しても同じ', JSON.stringify(parseLyricsText(txt2)) === JSON.stringify(parsed), txt2);
+    const merged = mergeLyricsText(L, txt2.replace('[サビ]', '[Bメロ]'));
+    ok('セクション：再編集で行IDとタイミングの紐づけを維持', merged.map(l => l.id).join() === 'l0,l1,l2,l3' && merged[3].section === 'Bメロ', JSON.stringify(merged));
+    const secs = sectionsOf(L);
+    ok('セクション：一覧（見出し前は「（冒頭）」）', secs.map(x => `${x.name}:${x.lineIds.join('+')}`).join() === '（冒頭）:l0,Aメロ:l1+l2,サビ:l3', JSON.stringify(secs));
+    ok('セクション：見出しが無ければ空', sectionsOf([{ id: 'a', text: 'A' }]).length === 0);
+    const cs = buildCues(L, { l0: { start: 1 }, l1: { start: 5 }, l2: { start: 8, end: 11 }, l3: { start: 14 } }, 30);
+    const r = sectionRanges(secs, cs);
+    ok('セクション：区間＝最初の開始〜最後の終了', r[0].start === 1 && r[0].end === 5 && r[1].start === 5 && r[1].end === 11 && r[2].start === 14 && r[2].end === 30, JSON.stringify(r.map(x => [x.start, x.end])));
+    ok('セクション：未記録のセクションは区間なし', sectionRanges(secs, buildCues(L, { l0: { start: 1 } }, 30))[1].start === null);
+    ok('ファイル名の重複に _2', uniqueNames(['曲_サビ.mp4', '曲_Aメロ.mp4', '曲_サビ.mp4', '曲_サビ.mp4']).join() === '曲_サビ.mp4,曲_Aメロ.mp4,曲_サビ_2.mp4,曲_サビ_3.mp4');
+  }
+}
+
+/** 区間を指定した書き出し（セクションごとの書き出し）：長さ・音声と映像の位置・字幕の表示 */
+export async function rangeExportTest(label, genOpts) {
+  const src = await makeTestVideo({ seconds: 5, ...genOpts });
+  const lines = [{ id: 'a', text: 'もう朝焼けがカーテンを染める' }, { id: 'b', text: '君のいない部屋で目を覚ます' }];
+  // このセクションの歌詞だけ（b: 2.5〜3.4）を、1.6〜3.5 秒の区間で書き出す
+  const cues = buildCues(lines, { a: { start: 1.0, end: null }, b: { start: 2.5, end: 3.4 } }, 5).filter(c => c.lineId === 'b');
+  const st = { ...DEFAULT_STYLE, animation: 'none', bgMode: 'none' };
+  const res = await exportVideo({ file: src, cues, style: st, range: { start: 1.6, end: 3.5 }, onProgress: () => {} });
+  const bo = await detectBeeps(res.blob);
+  // ビープ検出には一定の遅れ（AAC のプライミング分 ≒ 44ms）があるため、元動画を同じ方法で検出した時刻を基準にする
+  let ref;
+  try { ref = await detectBeeps(src); } catch { ref = await detectBeeps((await exportVideo({ file: src, cues: [], style: st, onProgress: () => {} })).blob); }
+  const lag = ref[0];
+  // 出力の 0 秒は 1.6 秒付近（音声フレームの境目に合わせるので最大 1 フレーム ≒ 21ms 後ろ）
+  const off = 2 + lag - bo[0];
+  ok(`[${label}] 区間書き出し：開始位置 ${off.toFixed(3)} 秒（1.6〜1.63）`, off >= 1.599 && off < 1.63, `beeps=${bo.map(x => x.toFixed(3))}`);
+  ok(`[${label}] 区間書き出し：長さ ${res.durationSec.toFixed(3)} 秒（約1.9秒）`, Math.abs(res.durationSec + off - 3.5) < 0.05);
+  ok(`[${label}] 区間書き出し：音声の間隔（ビープ 2.0→3.0 秒）`, bo.length === 2 && Math.abs(bo[1] - bo[0] - 1) < 0.002, `beeps=${bo.map(x => x.toFixed(3))}`);
+  const { frames } = await decodeFrames(res.blob, [2.0 - off - 0.034, 2.0 - off + 0.005, 2.2 - off, 2.7 - off, 3.45 - off]);
+  const [pre, flash, before, during, after] = frames;
+  ok(`[${label}] 区間書き出し：映像の位置（2.000秒のフラッシュ）`, pre && flash && pre.corner < 200 && flash.corner > 240, JSON.stringify([pre, flash]));
+  ok(`[${label}] 区間書き出し：歌詞は記録した時刻のとおりに表示`, before.white < 50 && during.white > 300 && after.white < 50, JSON.stringify([before, during, after]));
+  ok(`[${label}] 区間書き出し：区間外の歌詞は出ない（a 行）`, before.white < 50);
+  return res;
 }
 
 async function decodeFrames(blob, times) {
@@ -134,6 +179,10 @@ export async function runAll(log = () => {}) {
   try {
     if ((await VideoEncoder.isConfigSupported({ codec: 'hvc1.1.6.L123.B0', width: 1080, height: 1920, bitrate: 4e6 })).supported) cases.push(['HEVC 縦9:16', { width: 1080, height: 1920, codec: 'hevc' }, {}]);
   } catch { /* HEVC エンコード非対応環境 */ }
+  for (const [label, gen] of [['横16:9', { width: 1920, height: 1080 }], ['iPhone風 縦9:16 回転90°', { width: 1080, height: 1920, rotation: 90 }]]) {
+    try { await rangeExportTest(label, gen); } catch (e) { ok(`[${label}] 区間書き出し 例外なし`, false, String(e.stack || e)); }
+    log(results);
+  }
   for (const [label, gen, style] of cases) {
     try { await exportTest(label, gen, style); } catch (e) { ok(`[${label}] 例外なし`, false, String(e.stack || e)); }
     log(results);

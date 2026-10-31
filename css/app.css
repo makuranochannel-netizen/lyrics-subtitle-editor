@@ -352,3 +352,15 @@ body.page-library { overflow: auto; }
   #btnPlay2, #tlTime, #btnExport2 { display: none; }
   .kbd-table td:first-child { width: 110px; }
 }
+
+/* セクション（Aメロ・サビなど） */
+.sec-head { list-style: none; margin: 10px 0 2px; padding: 3px 8px; font-size: 11px; font-weight: 700; color: #ffaa3c; border-bottom: 1px solid #ffaa3c55; cursor: pointer; }
+.sec-head:first-child { margin-top: 2px; }
+.sec-head:hover { background: #ffaa3c14; }
+.lib-item-secs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.sec-chip { font-size: 10px; color: #ffaa3c; border: 1px solid #ffaa3c66; border-radius: 999px; padding: 0 7px; }
+.ex-secs { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-bottom: 10px; }
+.ex-sec { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ex-sec.off { opacity: .5; }
+.ex-results { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ex-results li { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; border-bottom: 1px solid var(--line); padding-bottom: 6px; }

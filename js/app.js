@@ -1,7 +1,7 @@
 // 歌詞字幕エディタ — メインコントローラー
 import { db } from './db.js';
-import { uid, clamp, fmtTime, parseTime, fmtSrt, debounce, escapeHtml, fmtBytes, downloadBlob, deepClone, mergeLines, splitLyrics, hexToRgba } from './util.js';
-import { buildCues, activeCueAt, firstUnrecorded, removeCuesKeepingGaps } from './cues.js';
+import { uid, clamp, fmtTime, parseTime, fmtSrt, debounce, escapeHtml, fmtBytes, downloadBlob, deepClone, hexToRgba, parseLyricsText, lyricsToText, mergeLyricsText, sectionsOf, uniqueNames } from './util.js';
+import { buildCues, activeCueAt, firstUnrecorded, removeCuesKeepingGaps, sectionRanges } from './cues.js';
 import { DEFAULT_STYLE, STYLE_PRESETS, createCueElement, layoutBox, animState, wipeClip } from './subtitle.js';
 import { Timeline } from './timeline.js';
 import { LIB_CHANNEL, PENDING_KEY, openLibraryPage } from './library-link.js';
@@ -106,6 +106,8 @@ function recomputeCues() {
   // これから記録する行に古いタイミングが残っていても表示せず、「記録開始」を押しただけでは歌詞は出ない。
   S.recordCues = S.recordMode ? buildCues(p.lines.slice(0, p.editor.cursor), p.timings, video.duration || p.video?.duration) : null;
   timeline.setCues(S.cues);
+  timeline.setSections(sectionRanges(sectionsOf(p.lines), S.cues).filter(x => x.start != null)
+    .map(x => ({ name: x.name, start: x.start, end: isFinite(x.end) ? x.end : (video.duration || p.video?.duration || x.start) })));
   updateRecordBar();
 }
 
@@ -639,10 +641,12 @@ function renderLines() {
         <div class="line-actions">
           <button class="btn" data-a="mergeNext" ${i < p.lines.length - 1 ? '' : 'disabled'} title="次の行とつなげて1行にする">⤓ 次の行と結合</button>
           <button class="btn" data-a="insertBelow">＋ 下に行を追加</button>
+          <button class="btn" data-a="section" title="この行から始まるセクション（Aメロ・サビなど）の名前">🏷 ${l.section ? 'セクション名' : 'ここからセクション'}</button>
           <button class="btn" data-a="up" title="上へ移動">↑</button><button class="btn" data-a="down" title="下へ移動">↓</button>
         </div></div>`;
     }
-    return `<li class="${cls}" data-id="${l.id}">
+    const head = l.section ? `<li class="sec-head" data-id="${l.id}" title="クリックで名前を変更">🏷 ${escapeHtml(l.section)}</li>` : '';
+    return `${head}<li class="${cls}" data-id="${l.id}">
       <div class="line-main"><span class="line-handle" draggable="true" title="ドラッグで並べ替え">⋮⋮</span><span class="line-no">${i + 1}</span><span class="line-dot"></span>
       <span class="line-text">${escapeHtml(l.text)}</span><span class="line-time">${timeText}</span>
       <button class="line-rec" data-a="cursorHere" title="${i === p.editor.cursor ? 'ここから記録します' : 'この行から記録を始める（記録済みの行も記録し直せます）'}">${i === p.editor.cursor ? '● 記録位置' : '● ここから'}</button></div>${edit}</li>`;
@@ -720,6 +724,8 @@ function setRecordStart(idx) {
 function setupLineList() {
   const list = $('#lineList');
   list.addEventListener('click', e => {
+    const sh = e.target.closest('.sec-head');
+    if (sh) { editSection(sh.dataset.id); return; }
     const li = e.target.closest('.line');
     if (!li) return;
     const id = li.dataset.id, p = P();
@@ -753,6 +759,7 @@ function setupLineList() {
       } else if (a === 'up') moveLine(idx, idx - 1);
       else if (a === 'down') moveLine(idx, idx + 1);
       else if (a === 'mergeNext') mergeWithNext(idx);
+      else if (a === 'section') editSection(id);
       else if (a === 'insertBelow') {
         pushUndo('行の追加');
         const nl = { id: uid('l_'), text: '（新しい行）' };
@@ -926,6 +933,20 @@ function openCueTextDialog() {
   inp.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); commit(); } });
 }
 
+/** この行から始まるセクションの名前を付ける・変える（空にするとセクションを外す） */
+async function editSection(id) {
+  const p = P();
+  const l = p.lines.find(x => x.id === id);
+  if (!l) return;
+  const v = await promptDialog('セクション名（例：Aメロ、Bメロ、サビ）。空にするとセクションを外します', l.section || '', { ok: '決定' });
+  if (v == null) return;
+  const name = v.trim().replace(/^[[［【]|[\]］】]$/g, '').trim().slice(0, 40);
+  if ((l.section || '') === name) return;
+  pushUndo(name ? 'セクション名の設定' : 'セクションを外す');
+  if (name) l.section = name; else delete l.section;
+  changed();
+}
+
 /** 選んだ歌詞（行とタイミング）を削除 */
 function deleteSelectedCue() {
   const p = P();
@@ -935,6 +956,9 @@ function deleteSelectedCue() {
   pushUndo(`${idx + 1}行目の削除`);
   // 削除した区間は空白のまま残す（前のブロックの終了を延ばさない・後のブロックの開始も変えない）
   removeCuesKeepingGaps(p.lines, p.timings, video.duration || p.video?.duration, [id]);
+  // セクションの最初の行を消したときは、セクションを次の行に引き継ぐ
+  const nextLine = p.lines[idx + 1];
+  if (p.lines[idx].section && nextLine && !nextLine.section) nextLine.section = p.lines[idx].section;
   p.lines.splice(idx, 1);
   if (p.editor.cursor > idx) p.editor.cursor--;
   p.editor.cursor = Math.min(p.editor.cursor, p.lines.length);
@@ -1046,8 +1070,8 @@ function openLyricsEditor() {
     <div class="modal-body">
       <label class="block"><span>楽曲名</span><input id="edTitle" value="${escapeHtml(title)}" placeholder="例：朝焼けのカーテン"></label>
       <label class="block"><span>アーティスト（任意）</span><input id="edArtist" value="${escapeHtml(artist)}"></label>
-      <label class="block"><span>歌詞（1行＝1字幕。空行は無視されます）</span>
-        <textarea id="edLines" placeholder="もう朝焼けがカーテンを染める&#10;君のいない部屋で目を覚ます&#10;昨日の続きを探している">${escapeHtml(p.lines.map(l => l.text).join('\n'))}</textarea></label>
+      <label class="block"><span>歌詞（1行＝1字幕。空行は無視されます。<b>[Aメロ]</b> のように括弧だけの行を書くと、次の行からがそのセクションになります）</span>
+        <textarea id="edLines" placeholder="[Aメロ]&#10;もう朝焼けがカーテンを染める&#10;君のいない部屋で目を覚ます&#10;&#10;[サビ]&#10;昨日の続きを探している">${escapeHtml(lyricsToText(p.lines))}</textarea></label>
       <div class="muted small" id="edCount"></div>
       ${p.lyricSetId ? '<label class="inline"><input type="checkbox" id="edSyncLib" checked> 歌詞ライブラリにも反映する</label>' : '<div class="muted small">保存すると歌詞ライブラリにも登録されます。</div>'}
       <div class="muted small">本文が同じ行・同じ位置の行は、記録済みのタイミングを引き継ぎます。</div>
@@ -1057,19 +1081,19 @@ function openLyricsEditor() {
       <button class="btn primary" id="edSave">保存</button>
     </div>`);
   const ta = $('#edLines');
-  const count = () => { $('#edCount').textContent = `${splitLyrics(ta.value).length} 行`; };
+  const count = () => { const x = parseLyricsText(ta.value); const n = x.filter(l => l.section).length; $('#edCount').textContent = `${x.length} 行${n ? `・セクション ${n} 個` : ''}`; };
   ta.addEventListener('input', count);
   count();
   setTimeout(() => (title ? ta : $('#edTitle')).focus(), 50);
 
   $('#edSave').onclick = async () => {
-    const texts = splitLyrics(ta.value);
+    const texts = parseLyricsText(ta.value);
     const t = $('#edTitle').value.trim() || '無題の歌詞';
     const ar = $('#edArtist').value.trim();
     if (!texts.length) { toast('歌詞を1行以上入力してください', true); return; }
     pushUndo('歌詞の編集');
     const cursorId = p.lines[p.editor.cursor]?.id;
-    p.lines = mergeLines(p.lines, texts);
+    p.lines = mergeLyricsText(p.lines, ta.value);
     p.lyricTitle = t;
     cleanupTimings();
     const ci = cursorId ? p.lines.findIndex(l => l.id === cursorId) : -1;
@@ -1383,13 +1407,36 @@ async function openExportDialog() {
   const base = (p.name || 'lyrics').replace(/[\\/:*?"<>|]/g, '_');
   const canPick = !!window.showSaveFilePicker;
   const big = S.file.size > 700 * 1024 * 1024;
+  const dur = video.duration || p.video?.duration || 0;
+  const secs = sectionRanges(sectionsOf(p.lines), S.cues);
+  const secRows = secs.map((x, i) => {
+    const ok = x.start != null;
+    const end = ok ? (isFinite(x.end) ? x.end : dur) : 0;
+    return `<label class="ex-sec ${ok ? '' : 'off'}"><input type="checkbox" data-sec="${i}" ${ok ? 'checked' : 'disabled'}>
+      <b>${escapeHtml(x.name)}</b><span class="muted small">${ok ? `${fmtTime(x.start, false)} 〜 ${fmtTime(end, false)}（${(end - x.start).toFixed(1)} 秒・${x.cues.length} 行）` : '未記録'}</span></label>`;
+  }).join('');
   openModal(`
     <div class="modal-head">字幕を焼き込んだ MP4 を書き出し<button class="btn ghost sm" data-close id="exClose">✕</button></div>
     <div class="modal-body">
       <div class="small">出力: <b>${p.video.width}×${p.video.height}</b>（${aspectLabel(p.video.width, p.video.height)}・元動画と同じ解像度）／ H.264 + AAC ／ 字幕 ${S.cues.length} 行</div>
-      <label class="block"><span>ファイル名</span><input id="exName" value="${escapeHtml(base)}_字幕.mp4"></label>
+      ${secs.length ? `<div class="block"><span>書き出す範囲</span>
+        <div class="inline" style="gap:14px;flex-wrap:wrap">
+          <label class="inline"><input type="radio" name="exMode" value="all" checked> 動画全体</label>
+          <label class="inline"><input type="radio" name="exMode" value="sections"> セクションごとに分けて書き出す</label>
+        </div></div>
+      <div id="exSecs" class="ex-secs" hidden>
+        <div class="inline" style="gap:8px"><button class="btn sm" id="exSecAll">すべて選択</button><button class="btn sm" id="exSecNone">選択解除</button></div>
+        ${secRows}
+        <div class="inline" style="gap:10px;flex-wrap:wrap">
+          <label class="inline">開始の余白 <input id="exPadIn" type="number" min="0" max="10" step="0.1" value="0.5" style="width:64px"> 秒</label>
+          <label class="inline">終了の余白 <input id="exPadOut" type="number" min="0" max="10" step="0.1" value="0" style="width:64px"> 秒</label>
+        </div>
+        <label class="inline"><input type="checkbox" id="exOwnOnly" checked> そのセクションの歌詞だけを表示する（余白に前後のセクションの歌詞を出さない）</label>
+        <div class="muted small">ファイル名は「${escapeHtml(base)}_セクション名.mp4」になります（同じ名前のセクションは _2, _3…）。区間は、そのセクションで記録した最初の歌詞の開始から最後の歌詞の終了までです。</div>
+      </div>` : '<div class="muted small">歌詞に [Aメロ] のようなセクションを入れると、セクションごとに分けて書き出せます（左の「歌詞を編集」または行の「🏷 ここからセクション」）。</div>'}
+      <label class="block" id="exNameRow"><span>ファイル名</span><input id="exName" value="${escapeHtml(base)}_字幕.mp4"></label>
       <label class="block"><span>画質</span><select id="exQuality"><option value="high">高画質（ファイル大）</option><option value="standard" selected>標準（元動画と同程度）</option><option value="light">軽量</option></select></label>
-      ${canPick ? `<label class="inline"><input type="checkbox" id="exStream" ${big ? 'checked' : ''}> 先に保存先を選んで直接書き込む（大きな動画向け・メモリ節約）</label>` : ''}
+      ${canPick ? `<label class="inline"><input type="checkbox" id="exStream" ${big ? 'checked' : ''}> <span id="exStreamLabel">先に保存先を選んで直接書き込む（大きな動画向け・メモリ節約）</span></label>` : ''}
       <div id="exProgress" hidden>
         <div class="bar"><div id="exBar"></div></div>
         <div class="small" id="exMsg" style="margin-top:6px"></div>
@@ -1402,18 +1449,68 @@ async function openExportDialog() {
       <button class="btn" data-close id="exCancel">閉じる</button>
       <button class="btn accent" id="exStart">書き出し開始</button>
     </div>`, { wide: false, lock: true });
-  $('#exStart').onclick = () => runExport();
+  const modeSections = () => document.querySelector('input[name="exMode"]:checked')?.value === 'sections';
+  const syncMode = () => {
+    const sec = modeSections();
+    if ($('#exSecs')) $('#exSecs').hidden = !sec;
+    $('#exNameRow').hidden = sec;
+    if ($('#exStreamLabel')) $('#exStreamLabel').textContent = sec && window.showDirectoryPicker ? '先に保存先のフォルダを選んで直接書き込む' : '先に保存先を選んで直接書き込む（大きな動画向け・メモリ節約）';
+    if ($('#exStream')) $('#exStream').closest('label').hidden = sec && !window.showDirectoryPicker;
+  };
+  document.querySelectorAll('input[name="exMode"]').forEach(r => r.addEventListener('change', syncMode));
+  const setAll = v => document.querySelectorAll('#exSecs input[data-sec]:not(:disabled)').forEach(c => { c.checked = v; });
+  $('#exSecAll') && ($('#exSecAll').onclick = () => setAll(true));
+  $('#exSecNone') && ($('#exSecNone').onclick = () => setAll(false));
+  syncMode();
+  $('#exStart').onclick = () => runExport(modeSections() ? buildSectionJobs(secs, base, dur) : null);
 }
 
-async function runExport() {
-  const p = P();
-  const name = $('#exName').value.trim() || 'output.mp4';
-  const fileName = name.toLowerCase().endsWith('.mp4') ? name : `${name}.mp4`;
-  let writable = null;
-  if ($('#exStream')?.checked) {
+/** セクションごとの書き出し内容（選んだセクションだけ）。区間は余白を足して動画の範囲に収める */
+function buildSectionJobs(secs, base, dur) {
+  const padIn = clamp(Number($('#exPadIn').value) || 0, 0, 10), padOut = clamp(Number($('#exPadOut').value) || 0, 0, 10);
+  const ownOnly = $('#exOwnOnly').checked;
+  const picked = [...document.querySelectorAll('#exSecs input[data-sec]:checked')].map(c => secs[+c.dataset.sec]);
+  const names = uniqueNames(picked.map(x => `${base}_${x.name.replace(/[\\/:*?"<>|]/g, '_')}.mp4`));
+  return picked.map((x, i) => {
+    const end = isFinite(x.end) ? x.end : dur;
+    return {
+      name: names[i], label: x.name,
+      range: { start: Math.max(0, x.start - padIn), end: Math.min(dur || Infinity, end + padOut) },
+      cues: (ownOnly ? x.cues : S.cues).map(c => ({ ...c, end: isFinite(c.end) ? c.end : Infinity })),
+    };
+  });
+}
+
+async function saveBlobAs(blob, fileName) {
+  if (window.showSaveFilePicker) {
     try {
       const h = await window.showSaveFilePicker({ suggestedName: fileName, types: [{ description: 'MP4 動画', accept: { 'video/mp4': ['.mp4'] } }] });
-      writable = await h.createWritable();
+      const w = await h.createWritable(); await w.write(blob); await w.close();
+      toast('保存しました');
+    } catch (e) { if (e.name !== 'AbortError') downloadBlob(blob, fileName); }
+  } else downloadBlob(blob, fileName);
+}
+
+/**
+ * 書き出しを実行する。jobs が null なら動画全体を1本、配列ならセクションごとに順に書き出す
+ * （1本失敗しても残りは続ける）。
+ */
+async function runExport(jobs) {
+  const p = P();
+  const single = !jobs;
+  if (single) {
+    const name = $('#exName').value.trim() || 'output.mp4';
+    jobs = [{ name: name.toLowerCase().endsWith('.mp4') ? name : `${name}.mp4`, label: null, range: null, cues: S.cues.map(c => ({ ...c, end: isFinite(c.end) ? c.end : Infinity })) }];
+  }
+  if (!jobs.length) { toast('書き出すセクションを選んでください', true); return; }
+  // 保存先（直接書き込み）：1本ならファイル、セクションごとならフォルダを先に選ぶ
+  let dir = null, writable = null;
+  if ($('#exStream')?.checked && !$('#exStream').closest('label').hidden) {
+    try {
+      if (single) {
+        const h = await window.showSaveFilePicker({ suggestedName: jobs[0].name, types: [{ description: 'MP4 動画', accept: { 'video/mp4': ['.mp4'] } }] });
+        writable = await h.createWritable();
+      } else dir = await window.showDirectoryPicker({ mode: 'readwrite' });
     } catch (e) { if (e.name === 'AbortError') return; toast('保存先を開けませんでした: ' + e.message, true); return; }
   }
   const ac = new AbortController();
@@ -1429,75 +1526,105 @@ async function runExport() {
   cancel.onclick = () => ac.abort();
   video.pause();
   const logEl = $('#exLog');
+  logEl.textContent = '';
   const addLog = m => { logEl.textContent += m + '\n'; logEl.scrollTop = 1e9; };
   const phaseW = { prep: [0, 0.05], encode: [0.05, 0.98], finalize: [0.98, 1] };
-  const t0 = performance.now();
-  try {
-    const res = await exportVideo({
-      file: S.file,
-      cues: S.cues.map(c => ({ ...c, end: isFinite(c.end) ? c.end : Infinity })),
-      style: p.style,
-      fontFamily: fontFamilyFor(p.style),
-      fontCss: await fontCssFor(p.style),
-      quality: $('#exQuality').value,
-      writable,
-      signal: ac.signal,
-      onProgress: ev => {
-        if (ev.phase === 'log') { addLog(ev.msg); return; }
-        const [a, b] = phaseW[ev.phase] || [0, 1];
-        const r = a + (b - a) * (ev.ratio || 0);
-        $('#exBar').style.width = `${(r * 100).toFixed(1)}%`;
-        let m = `${(r * 100).toFixed(0)}%　${ev.msg || ''}`;
-        if (ev.fps) m += `　${ev.fps.toFixed(0)} fps`;
-        if (ev.eta != null) m += `　残り約 ${Math.ceil(ev.eta)} 秒`;
-        $('#exMsg').textContent = m;
-      },
-    });
-    const sec = ((performance.now() - t0) / 1000).toFixed(1);
-    addLog(`完了: ${res.frames} フレーム / ${res.width}×${res.height} / ${res.codec} / 音声: ${res.audioMode === 'copy' ? '元データをコピー' : res.audioMode === 'encoded' ? 'AACに変換' : 'なし'} / ${sec} 秒`);
-    $('#exBar').style.width = '100%';
-    $('#exMsg').textContent = '✓ 書き出しが完了しました';
-    const r = $('#exResult');
+  const fontFamily = fontFamilyFor(p.style), fontCss = await fontCssFor(p.style);
+  const results = [];
+  let aborted = false;
+  for (let j = 0; j < jobs.length && !aborted; j++) {
+    const job = jobs[j];
+    const tag = single ? '' : `[${j + 1}/${jobs.length} ${job.label}] `;
+    if (!single) addLog(`── ${job.label}（${fmtTime(job.range.start)} 〜 ${fmtTime(job.range.end)}）→ ${job.name}`);
+    const t0 = performance.now();
+    try {
+      let w = writable;
+      if (dir) w = await (await dir.getFileHandle(job.name, { create: true })).createWritable();
+      const res = await exportVideo({
+        file: S.file, cues: job.cues, range: job.range, style: p.style, fontFamily, fontCss,
+        quality: $('#exQuality').value, writable: w, signal: ac.signal,
+        onProgress: ev => {
+          if (ev.phase === 'log') { addLog(ev.msg); return; }
+          const [a, b] = phaseW[ev.phase] || [0, 1];
+          const r = (j + a + (b - a) * (ev.ratio || 0)) / jobs.length;
+          $('#exBar').style.width = `${(r * 100).toFixed(1)}%`;
+          let m = `${(r * 100).toFixed(0)}%　${tag}${ev.msg || ''}`;
+          if (ev.fps) m += `　${ev.fps.toFixed(0)} fps`;
+          if (ev.eta != null) m += `　残り約 ${Math.ceil(ev.eta)} 秒`;
+          $('#exMsg').textContent = m;
+        },
+      });
+      const sec = ((performance.now() - t0) / 1000).toFixed(1);
+      addLog(`完了: ${res.frames} フレーム / ${res.width}×${res.height} / ${res.durationSec.toFixed(2)} 秒 / ${res.codec} / 音声: ${res.audioMode === 'copy' ? '元データをコピー' : res.audioMode === 'encoded' ? 'AACに変換' : 'なし'} / ${sec} 秒`);
+      results.push({ job, res });
+    } catch (e) {
+      console.error(e);
+      if (e.name === 'AbortError') { aborted = true; break; }
+      addLog(`✗ ${tag}失敗: ${e.message}`);
+      addLog(String(e.stack || e));
+      results.push({ job, error: e });
+    }
+  }
+  const okList = results.filter(x => x.res);
+  const failed = results.filter(x => x.error);
+  window.__lastExport = okList.length ? { blob: okList[0].res.blob, name: okList[0].job.name, result: okList[0].res, all: okList.map(x => ({ name: x.job.name, blob: x.res.blob, result: x.res })) } : null;
+  $('#exBar').style.width = aborted ? $('#exBar').style.width : '100%';
+  $('#exMsg').textContent = aborted ? '中止しました' : single && failed.length ? `エラー: ${failed[0].error.message}` : failed.length ? `書き出し完了 ${okList.length} 本・失敗 ${failed.length} 本` : `✓ 書き出しが完了しました${single ? '' : `（${okList.length} 本）`}`;
+  if (failed.length && single) toast('書き出しに失敗しました: ' + failed[0].error.message, true);
+  else if (failed.length) toast(`${failed.length} 本の書き出しに失敗しました（ログを確認してください）`, true);
+  const r = $('#exResult');
+  if (okList.length) {
     r.hidden = false;
-    if (res.blob) {
-      window.__lastExport = { blob: res.blob, name: fileName, result: res };
+    const shareable = x => x.res.blob && navigator.canShare?.({ files: [new File([x.res.blob], x.job.name, { type: 'video/mp4' })] });
+    if (single && okList[0].res.blob) {
+      const { res } = okList[0];
       const url = URL.createObjectURL(res.blob);
-      const shareFile = new File([res.blob], fileName, { type: 'video/mp4' });
-      const canShare = !!navigator.canShare?.({ files: [shareFile] });
-      r.innerHTML = `<div class="inline" style="gap:8px;flex-wrap:wrap">${canShare ? `<button class="btn accent" id="exShare">📱 写真に保存 / 共有</button>` : ''}<button class="btn ${canShare ? '' : 'accent'}" id="exSave">💾 ファイルに保存（${fmtBytes(res.blob.size)}）</button></div>
+      const canShare = shareable(okList[0]);
+      r.innerHTML = `<div class="inline" style="gap:8px;flex-wrap:wrap">${canShare ? `<button class="btn accent" data-share="0">📱 写真に保存 / 共有</button>` : ''}<button class="btn ${canShare ? '' : 'accent'}" data-save="0">💾 ファイルに保存（${fmtBytes(res.blob.size)}）</button></div>
         ${canShare ? '<div class="muted small">「写真に保存 / 共有」→「ビデオを保存」で写真アプリに保存できます。</div>' : ''}
         <video src="${url}" controls playsinline style="margin-top:10px;max-width:100%;max-height:300px;background:#000;border-radius:8px"></video>`;
-      if (canShare) {
-        $('#exShare').onclick = async () => {
-          try { await navigator.share({ files: [shareFile], title: fileName }); }
-          catch (e) { if (e.name !== 'AbortError') toast('共有できませんでした: ' + e.message, true); }
-        };
-      }
-      $('#exSave').onclick = async () => {
-        if (window.showSaveFilePicker) {
-          try {
-            const h = await window.showSaveFilePicker({ suggestedName: fileName, types: [{ description: 'MP4 動画', accept: { 'video/mp4': ['.mp4'] } }] });
-            const w = await h.createWritable(); await w.write(res.blob); await w.close();
-            toast('保存しました');
-          } catch (e) { if (e.name !== 'AbortError') downloadBlob(res.blob, fileName); }
-        } else downloadBlob(res.blob, fileName);
-      };
+    } else if (single || dir) {
+      r.innerHTML = `<div>選択した保存先に書き込みました（${okList.map(x => escapeHtml(x.job.name)).join('、')}）。</div>`;
     } else {
-      r.innerHTML = '<div>選択した保存先に書き込みました。</div>';
+      const anyShare = okList.some(shareable);
+      r.innerHTML = `<div class="inline" style="gap:8px;flex-wrap:wrap;margin-bottom:6px">${anyShare ? '<button class="btn accent" data-share="all">📱 すべて写真に保存 / 共有</button>' : ''}<button class="btn ${anyShare ? '' : 'accent'}" data-save="all">💾 すべて保存</button></div>
+        <ul class="ex-results">${okList.map((x, i) => `<li><span>${escapeHtml(x.job.name)}<span class="muted small">　${x.res.durationSec.toFixed(1)} 秒・${fmtBytes(x.res.blob.size)}</span></span>
+          <span class="inline" style="gap:6px">${shareable(x) ? `<button class="btn sm" data-share="${i}">📱 共有</button>` : ''}<button class="btn sm" data-save="${i}">💾 保存</button><button class="btn sm" data-preview="${i}">▶</button></span></li>`).join('')}</ul>
+        <video id="exPreview" controls playsinline hidden style="margin-top:10px;max-width:100%;max-height:300px;background:#000;border-radius:8px"></video>`;
     }
-  } catch (e) {
-    console.error(e);
-    $('#exMsg').textContent = e.name === 'AbortError' ? '中止しました' : `エラー: ${e.message}`;
-    addLog(String(e.stack || e));
-    if (e.name !== 'AbortError') toast('書き出しに失敗しました: ' + e.message, true);
-  } finally {
-    S.exporting = false;
-    $('#exStart').disabled = false;
-    $('#exStart').textContent = 'もう一度書き出す';
-    $('#exClose').hidden = false;
-    cancel.textContent = '閉じる';
-    cancel.onclick = closeModal;
+    r.onclick = async e => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      const pick = v => (v === 'all' ? okList : [okList[+v]]);
+      if (b.dataset.share != null) {
+        const files = pick(b.dataset.share).map(x => new File([x.res.blob], x.job.name, { type: 'video/mp4' }));
+        try { await navigator.share({ files, title: files.length === 1 ? files[0].name : `${files.length} 本の動画` }); }
+        catch (err) { if (err.name !== 'AbortError') toast('共有できませんでした: ' + err.message, true); }
+      } else if (b.dataset.save != null) {
+        const list = pick(b.dataset.save);
+        if (list.length > 1 && window.showDirectoryPicker) {
+          try {
+            const d = await window.showDirectoryPicker({ mode: 'readwrite' });
+            for (const x of list) { const w = await (await d.getFileHandle(x.job.name, { create: true })).createWritable(); await w.write(x.res.blob); await w.close(); }
+            toast(`${list.length} 本を保存しました`);
+          } catch (err) { if (err.name !== 'AbortError') toast('保存できませんでした: ' + err.message, true); }
+        } else if (list.length > 1) {
+          for (const x of list) { downloadBlob(x.res.blob, x.job.name); await new Promise(res => setTimeout(res, 400)); }
+        } else await saveBlobAs(list[0].res.blob, list[0].job.name);
+      } else if (b.dataset.preview != null) {
+        const v = $('#exPreview');
+        if (v._url) URL.revokeObjectURL(v._url);
+        v._url = URL.createObjectURL(okList[+b.dataset.preview].res.blob);
+        v.src = v._url; v.hidden = false; v.play().catch(() => {});
+      }
+    };
   }
+  S.exporting = false;
+  $('#exStart').disabled = false;
+  $('#exStart').textContent = 'もう一度書き出す';
+  $('#exClose').hidden = false;
+  cancel.textContent = '閉じる';
+  cancel.onclick = closeModal;
 }
 
 function exportSrt() {
