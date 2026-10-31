@@ -8,6 +8,7 @@ import { LIB_CHANNEL, PENDING_KEY, openLibraryPage } from './library-link.js';
 import { MAC_FONT_GROUPS, fontCss, primaryFamily, isFontAvailable, savedLocalFamilies, loadAllLocalFamilies } from './fonts.js';
 import { exportVideo } from './exporter.js';
 import { readMovie, describeTracks } from './demux.js';
+import { setupFlow } from './flow.js';
 
 const $ = sel => document.querySelector(sel);
 const $$ = sel => [...document.querySelectorAll(sel)];
@@ -34,6 +35,7 @@ const S = {
   exporting: false,
 };
 window.app = S; // デバッグ用
+let flow = null; // プロジェクト開始フロー（スタート画面 → 歌詞選択 → 動画読み込み → 字幕編集）
 
 // ============================================================
 // プロジェクト
@@ -280,6 +282,7 @@ window.addEventListener('keydown', e => {
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.code === 'KeyS') { e.preventDefault(); saveProject(true); return; }
   if (!$('#modal').hidden) { if (e.key === 'Escape' && !S.exporting) closeModal(); return; }
+  if (flow?.isOpen()) return; // スタート画面などでは編集画面のショートカットを使わない
   // 記録モード中は、フォーカスの位置に関係なく記録キーで記録する（歌詞の文字・時刻を直している最中は除く）
   const editingLine = !!e.target.closest?.('.text-edit, .line-edit');
   if (S.recordMode && !editingLine && !mod && !e.altKey && matchesRecordKey(e)) {
@@ -1025,10 +1028,11 @@ async function goLibrary() {
 async function applyPendingLyricSet() {
   let pending = null;
   try { pending = JSON.parse(localStorage.getItem(PENDING_KEY) || 'null'); localStorage.removeItem(PENDING_KEY); } catch { /* 無視 */ }
-  if (!pending || Date.now() - pending.at > 30 * 60 * 1000) return;
+  if (!pending || Date.now() - pending.at > 30 * 60 * 1000) return false;
   await loadLibrary();
   const set = S.library.find(x => x.id === pending.id);
   if (set) useLyricSet(set);
+  return !!set;
 }
 
 async function useLyricSet(set) {
@@ -1658,6 +1662,7 @@ async function openProject(id) {
   if (!p) { toast('プロジェクトが見つかりません', true); return; }
   activateProject(normalizeProject(p));
   await restoreVideo();
+  flow?.onProjectOpened();
 }
 
 function activateProject(p) {
@@ -1682,17 +1687,6 @@ function activateProject(p) {
   db.setMeta('lastProjectId', p.id);
 }
 
-async function createNewProject() {
-  if (P() && S.dirty) await saveProject(false);
-  const p = newProject();
-  // デザインは既定値（縁取りなし）から始め、記録キーなどの操作設定だけ引き継ぐ
-  if (P()) { p.editor.recordKey = P().editor.recordKey; p.editor.recordOffset = P().editor.recordOffset; }
-  activateProject(p);
-  await saveProject(false);
-  await restoreVideo();
-  toast('新しいプロジェクトを作成しました');
-}
-
 async function openProjectsDialog() {
   await saveProject(false);
   const list = (await db.getAll('projects')).sort((a, b) => b.updatedAt - a.updatedAt);
@@ -1708,7 +1702,7 @@ async function openProjectsDialog() {
   $('#modalCard').onclick = async e => {
     const a = e.target.dataset.a;
     if (!a) return;
-    if (a === 'new') { closeModal(); createNewProject(); return; }
+    if (a === 'new') { closeModal(); flow.startNew(); return; }
     const id = e.target.closest('li')?.dataset.id;
     if (a === 'open') { closeModal(); openProject(id); }
     if (a === 'dup') {
@@ -1751,6 +1745,7 @@ async function importProjectJson(file) {
     await saveProject(false);
     await restoreVideo();
     toast('プロジェクトを読み込みました。動画ファイルを選択してください');
+    flow?.onProjectOpened();
   } catch (e) { toast('読み込みに失敗しました: ' + e.message, true); }
 }
 
@@ -1877,6 +1872,8 @@ function setLeftCollapsed(on) {
 }
 
 function bindUI() {
+  $('#btnHome').onclick = () => flow.home();
+  $('#btnBackVideo').onclick = () => flow.backToVideo();
   $('#btnOpenVideo').onclick = openVideoDialog;
   $('#btnOpenVideo2').onclick = openVideoDialog;
   $('#fileVideo').onchange = e => { const f = e.target.files[0]; if (f) loadVideoFile(f); e.target.value = ''; };
@@ -1956,7 +1953,7 @@ function bindUI() {
   menu.addEventListener('click', e => {
     const a = e.target.closest('[data-act]')?.dataset.act;
     menu.hidden = true;
-    if (a === 'newProject') createNewProject();
+    if (a === 'newProject') flow.startNew();
     if (a === 'openProjects') openProjectsDialog();
     if (a === 'save') saveProject(true);
     if (a === 'exportJson') exportProjectJson();
@@ -2031,11 +2028,18 @@ async function init() {
   activateProject(last ? normalizeProject(last) : newProject());
   if (!last) await saveProject(false);
   await restoreVideo();
-  await applyPendingLyricSet();
+  const usedFromLibrary = await applyPendingLyricSet();
+  const qv = new URLSearchParams(location.search).get('video');
+  flow = setupFlow({
+    S, P, video, toast, confirmDialog, saveLyricSet, saveProject, activateProject, newProject, restoreVideo, loadVideoFile, openProject, openProjectsDialog, setRecordMode, aspectLabel,
+    onEnterEditor: () => { fitStage(); renderOverlay(true); },
+  });
+  // 起動時はスタート画面。編集中の再読み込み（#/edit）・ライブラリの「このプロジェクトで使う」・テスト用 ?video= は編集画面
+  flow.init({ editor: usedFromLibrary || !!qv });
+  window.flow = flow; // デバッグ用
   requestAnimationFrame(loop);
   showInstallHint();
   // 開発・テスト用: ?video=URL で動画を読み込む
-  const qv = new URLSearchParams(location.search).get('video');
   if (qv) {
     const res = await fetch(qv);
     const blob = await res.blob();

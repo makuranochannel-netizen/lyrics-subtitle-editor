@@ -1,9 +1,9 @@
 // オフラインでも起動できるようにするサービスワーカー
 // 方針：ネットにつながる時は常に最新を取得（ネットワーク優先）し、取得したものをキャッシュ。オフライン時はキャッシュを使う。
-const CACHE = 'lyrics-subtitle-editor-v4';
+const CACHE = 'lyrics-subtitle-editor-v5';
 const CORE = [
   './', 'index.html', 'library.html', 'css/app.css', 'manifest.webmanifest',
-  'js/app.js', 'js/cues.js', 'js/db.js', 'js/demux.js', 'js/exporter.js', 'js/fonts.js', 'js/library-link.js', 'js/library-page.js', 'js/subtitle.js', 'js/timeline.js', 'js/util.js',
+  'js/app.js', 'js/cues.js', 'js/db.js', 'js/demux.js', 'js/exporter.js', 'js/flow.js', 'js/fonts.js', 'js/library-link.js', 'js/library-page.js', 'js/subtitle.js', 'js/timeline.js', 'js/util.js',
   'vendor/mp4box.all.min.js', 'vendor/mp4-muxer.min.js',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
 ];

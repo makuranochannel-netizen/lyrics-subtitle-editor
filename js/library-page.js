@@ -69,7 +69,7 @@ async function useInEditor(set) {
     toast(`「${set.title}」をエディタに読み込みました`);
     if (window.opener && !window.opener.closed) window.opener.focus();
   } else {
-    location.href = 'index.html';
+    location.href = 'index.html#/edit';
   }
 }
 

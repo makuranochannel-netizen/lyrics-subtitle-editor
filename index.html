@@ -20,6 +20,7 @@
 <body>
 <div id="app">
   <header class="topbar">
+    <button id="btnHome" class="btn ghost icon" title="スタート画面へ（新規プロジェクト・保存済みプロジェクト）" aria-label="スタート画面へ">🏠</button>
     <div class="brand">歌詞字幕エディタ</div>
     <input id="projectName" class="project-name" placeholder="プロジェクト名" title="プロジェクト名">
     <div class="menu-wrap">
@@ -36,6 +37,7 @@
         <button data-act="exportAss">字幕を ASS で書き出し</button>
       </div>
     </div>
+    <button id="btnBackVideo" class="btn" title="動画読み込みの画面に戻る（動画の確認・差し替え）">← 動画</button>
     <button id="btnOpenVideo" class="btn primary">動画を開く</button>
     <span id="saveState" class="save-state">—</span>
     <div class="spacer"></div>
@@ -171,6 +173,9 @@
     </div>
   </footer>
 </div>
+
+<!-- プロジェクト開始フロー（スタート画面・歌詞選択・動画読み込み）。js/flow.js が中身を作る -->
+<div id="flow" class="flow" hidden></div>
 
 <!-- モーダル -->
 <div id="modal" class="modal" hidden>
